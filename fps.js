@@ -1159,7 +1159,12 @@ function renderWorld() {
 function renderEnemies() {
   const horizon = HALF_H + Math.sin(player.bob) * 3 + player.pitch;
   const sprites = enemies.slice();
-  if (!ally.dead) sprites.push(ally);          // the ally renders as a friendly billboard
+  // === 3D world entities: when the 3D layer is active, the teammate is drawn
+  // by renderWorld3d() as a full mesh — skip the 2D billboard so we don't
+  // double-render. If the 3D path failed (WebGL disabled, THREE missing) the
+  // 2D billboard still shows as a fallback. ===
+  const ally3dActive = ENABLE_3D_ENTITIES && world3d.ready && !world3d.disabled;
+  if (!ally.dead && !ally3dActive) sprites.push(ally);          // the ally renders as a friendly billboard
   const sorted = sprites.sort((a, b) => b.dist - a.dist);
   for (const e of sorted) {
     const dx = e.x - player.x, dy = e.y - player.y;
@@ -1995,6 +2000,308 @@ function updateWeaponLayerVisibility() {
 }
 // === /3D weapons prototype ===
 
+// =========================================================================
+// === 3D world entities — batch 1: tactical teammate ===
+// The 2D raycaster keeps drawing walls, floor, ceiling. This module owns a
+// separate full-screen Three.js overlay whose camera tracks the player and
+// whose meshes represent in-world entities. Batch 1 = the AI teammate.
+// Later batches will move enemies (grunt/elite) and the boss over.
+//
+// Coordinate mapping (crucial to get right):
+//   raycaster grid X  ->  Three.js X       (both go "right")
+//   raycaster grid Y  ->  Three.js -Z      (raycaster Y increases into
+//                                            the map; Three.js Z runs
+//                                            OUT of the screen, so we flip)
+//   height (up)       ->  Three.js Y
+//
+// Ally facing formula (derived): rotation.y = ally.dir - PI/2. For dir=0
+// (east / +X in grid) the rifle points to +X world, which is right on
+// screen when the camera is facing forward. Verified for all four cardinals.
+//
+// Occlusion: we call the existing wallBetween() helper to hide the teammate
+// when a wall is between them and the player — the raycaster's z-buffer
+// isn't accessible from the Three.js layer, so we approximate with a ray
+// test. Frustum culling is handled automatically by Three.js.
+//
+// TODO (future batches):
+//   * batch 2: 3D enemies (grunt/elite) — swap billboard for mesh
+//   * batch 3: 3D boss with unique silhouette + attack anim
+//   * shared floating health bar sprite (canvas texture, face-camera)
+//   * shadow blob under feet (circle sprite on floor plane)
+//   * lower-body detach animation for ragdolls
+// =========================================================================
+const ENABLE_3D_ENTITIES = true;
+
+const world3d = {
+  canvas: null, scene: null, camera: null, renderer: null,
+  ready: false, disabled: false,
+  entities: {},                  // key -> entity record (mesh + anim state)
+  t: 0,
+  eyeH: 0.5,                     // camera height in world units (mid-wall)
+};
+
+// -------- teammate mesh factory --------
+// Human-shaped stack of primitives. ~18 meshes. Torso at Y=0.6, head at 1.02;
+// legs pivot at hip (Y=0.32), arms pivot at shoulder (Y=0.86). Arms and legs
+// live in their own sub-Groups so we can rotate them around the pivot for a
+// simple walk cycle.
+function createTeammateMesh() {
+  const g = new THREE.Group();
+
+  // Materials
+  const vest  = new THREE.MeshStandardMaterial({ color: 0x3a4a35, roughness: 0.70, metalness: 0.10 });
+  const plate = new THREE.MeshStandardMaterial({ color: 0x2a2d33, roughness: 0.50, metalness: 0.35 });
+  const pants = new THREE.MeshStandardMaterial({ color: 0x3a3a2a, roughness: 0.85, metalness: 0.05 });
+  const skin  = new THREE.MeshStandardMaterial({ color: 0xc9a58a, roughness: 0.75, metalness: 0.00 });
+  const glove = new THREE.MeshStandardMaterial({ color: 0x1a1e18, roughness: 0.80, metalness: 0.15 });
+  const helm  = new THREE.MeshStandardMaterial({ color: 0x30362a, roughness: 0.45, metalness: 0.35 });
+  const visor = new THREE.MeshStandardMaterial({ color: 0x2a3d55, roughness: 0.10, metalness: 0.75, emissive: 0x0a1a2a });
+  const boot  = new THREE.MeshStandardMaterial({ color: 0x2a1a10, roughness: 0.90, metalness: 0.05 });
+  const patch = new THREE.MeshStandardMaterial({ color: 0x4aaa4a, roughness: 0.60, emissive: 0x1a4a1a });
+
+  // ---- Torso (at chest height) ----
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.40, 0.60, 0.25), vest);
+  torso.position.set(0, 0.62, 0); g.add(torso);
+  const chestPlate = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.34, 0.04), plate);
+  chestPlate.position.set(0, 0.66, 0.13); g.add(chestPlate);
+  // Friendly-ID patch (green) — makes it obvious this is your teammate at a glance
+  const idPatch = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.06, 0.02), patch);
+  idPatch.position.set(-0.11, 0.76, 0.15); g.add(idPatch);
+  // Shoulder pauldrons
+  const shoulderL = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.09, 0.19), plate);
+  shoulderL.position.set(-0.24, 0.86, 0); g.add(shoulderL);
+  const shoulderR = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.09, 0.19), plate);
+  shoulderR.position.set(+0.24, 0.86, 0); g.add(shoulderR);
+
+  // ---- Head ----
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.09, 12, 10), skin);
+  head.position.set(0, 1.02, 0); g.add(head);
+  // Helmet dome (top-half sphere squashed)
+  const helmet = new THREE.Mesh(
+    new THREE.SphereGeometry(0.10, 14, 10, 0, Math.PI * 2, 0, Math.PI / 2), helm);
+  helmet.position.set(0, 1.05, 0);
+  helmet.scale.set(1.0, 0.85, 1.0); g.add(helmet);
+  // Visor strip
+  const visorStrip = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.030, 0.020), visor);
+  visorStrip.position.set(0, 1.03, 0.075); g.add(visorStrip);
+
+  // ---- Arms (each in its own pivot Group at the shoulder for walk sway) ----
+  function makeArm(side) {
+    const arm = new THREE.Group();
+    arm.position.set(side * 0.24, 0.86, 0);            // shoulder pivot
+    const upper = new THREE.Mesh(new THREE.CylinderGeometry(0.050, 0.050, 0.24, 10), vest);
+    upper.position.set(0, -0.12, 0); arm.add(upper);
+    const elbow = new THREE.Mesh(new THREE.SphereGeometry(0.052, 10, 8), vest);
+    elbow.position.set(0, -0.24, 0); arm.add(elbow);
+    const fore  = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.22, 10), vest);
+    fore.position.set(0, -0.36, 0.04); fore.rotation.x = -0.45; arm.add(fore);
+    const hand  = new THREE.Mesh(new THREE.SphereGeometry(0.050, 10, 8), glove);
+    hand.position.set(0, -0.47, 0.10); arm.add(hand);
+    return arm;
+  }
+  const armL = makeArm(-1); g.add(armL);
+  const armR = makeArm(+1); g.add(armR);
+
+  // ---- Legs (pivot at hip) ----
+  function makeLeg(side) {
+    const leg = new THREE.Group();
+    leg.position.set(side * 0.09, 0.32, 0);
+    const thigh = new THREE.Mesh(new THREE.CylinderGeometry(0.060, 0.060, 0.28, 10), pants);
+    thigh.position.set(0, -0.14, 0); leg.add(thigh);
+    const knee  = new THREE.Mesh(new THREE.SphereGeometry(0.055, 10, 8), pants);
+    knee.position.set(0, -0.28, 0); leg.add(knee);
+    const shin  = new THREE.Mesh(new THREE.CylinderGeometry(0.052, 0.048, 0.25, 10), pants);
+    shin.position.set(0, -0.41, 0); leg.add(shin);
+    const bootM = new THREE.Mesh(new THREE.BoxGeometry(0.085, 0.055, 0.15), boot);
+    bootM.position.set(0, -0.56, 0.025); leg.add(bootM);
+    return leg;
+  }
+  const legL = makeLeg(-1); g.add(legL);
+  const legR = makeLeg(+1); g.add(legR);
+
+  // ---- Rifle held at chest (shrunk-down variant of the pistol rifle mesh
+  //      idea — but light enough to inline; keeps this file self-contained) ----
+  const rifleGroup = new THREE.Group();
+  rifleGroup.position.set(0.06, 0.72, 0.18);
+  rifleGroup.rotation.y = -0.15;      // barrel angles slightly outward
+  const rDark = new THREE.MeshStandardMaterial({ color: 0x22252a, roughness: 0.5, metalness: 0.6 });
+  const rWood = new THREE.MeshStandardMaterial({ color: 0x4a3a2a, roughness: 0.85 });
+  const rBarrel = new THREE.Mesh(new THREE.CylinderGeometry(0.011, 0.011, 0.30, 10), rDark);
+  rBarrel.rotation.x = Math.PI / 2; rBarrel.position.set(0, 0, 0.10); rifleGroup.add(rBarrel);
+  const rRecv   = new THREE.Mesh(new THREE.BoxGeometry(0.040, 0.048, 0.14), rDark);
+  rRecv.position.set(0, -0.008, -0.06); rifleGroup.add(rRecv);
+  const rStock  = new THREE.Mesh(new THREE.BoxGeometry(0.034, 0.036, 0.10), rWood);
+  rStock.position.set(0, -0.008, -0.16); rifleGroup.add(rStock);
+  const rMag    = new THREE.Mesh(new THREE.BoxGeometry(0.024, 0.060, 0.030), rDark);
+  rMag.position.set(0, -0.052, -0.04); rifleGroup.add(rMag);
+  g.add(rifleGroup);
+
+  // ---- Muzzle flash quad (fires when ally.muzzle > 0) ----
+  const flashMat = new THREE.MeshBasicMaterial({
+    color: 0xffe0a0, transparent: true, opacity: 0,
+    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+  });
+  const muzzleFlash = new THREE.Mesh(new THREE.PlaneGeometry(0.14, 0.14), flashMat);
+  muzzleFlash.position.copy(rifleGroup.position);
+  muzzleFlash.position.z += 0.28;                    // in front of barrel tip
+  g.add(muzzleFlash);
+
+  return {
+    group: g,
+    armL, armR, legL, legR,
+    chestMat: plate,                                 // for hurt-tint emissive
+    muzzleFlash,
+    walkT: 0,                                        // walk cycle phase
+    prevX: 0, prevY: 0,                              // previous world pos for speed detection
+  };
+}
+
+function initWorld3d() {
+  if (world3d.ready || world3d.disabled) return;
+  if (typeof THREE === "undefined") return;         // Three.js not loaded yet — retry next frame
+  if (!ENABLE_3D_ENTITIES) return;
+  try {
+    const canvas = document.getElementById("world3d");
+    canvas.width  = window.innerWidth;
+    canvas.height = window.innerHeight;
+
+    const scene = new THREE.Scene();
+    // Vertical FOV matched to the raycaster's horizontal FOV so silhouettes
+    // line up when the teammate stands next to a wall segment.
+    const aspect = canvas.width / canvas.height;
+    const vFov = 2 * Math.atan(Math.tan(FOV / 2) / aspect) * 180 / Math.PI;
+    const camera = new THREE.PerspectiveCamera(vFov, aspect, 0.02, MAX_DEPTH);
+
+    const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.setSize(canvas.width, canvas.height, false);
+    renderer.setClearColor(0x000000, 0);              // transparent — see the 2D raycaster through it
+
+    scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+    const key = new THREE.DirectionalLight(0xfff2c8, 0.75); key.position.set( 2, 4,  1); scene.add(key);
+    const rim = new THREE.DirectionalLight(0x9ac0ff, 0.30); rim.position.set(-2, 2, -3); scene.add(rim);
+
+    // Build entities up front. Each entity stashes its animation state on
+    // its own record so the render loop is a simple for-each dispatch.
+    const teammate = createTeammateMesh();
+    scene.add(teammate.group);
+    world3d.entities.teammate = teammate;
+
+    Object.assign(world3d, { canvas, scene, camera, renderer, ready: true });
+    console.log("[fps][world3d] init OK", {
+      canvas: canvas.width + "x" + canvas.height, three: THREE.REVISION,
+      entities: Object.keys(world3d.entities),
+    });
+  } catch (err) {
+    console.warn("[fps][world3d] init failed — falling back to 2D billboards:", err);
+    world3d.disabled = true;
+  }
+}
+
+function updateTeammate(dt) {
+  const e = world3d.entities.teammate;
+  if (!e) return;
+
+  // ----- occlusion & death -----
+  // Hide when wall blocks LOS OR when ally has despawned. Death animation
+  // rotates the mesh forward by 90° over ~0.4s and fades opacity to 0 over
+  // the same 2s window the AI uses before the corpse is removed.
+  if (ally.dead) {
+    // Roll forward on death — dead body lies flat on the floor.
+    const t = Math.min(1, ally.deadT / 0.4);
+    e.group.rotation.x = t * (Math.PI / 2);
+    e.group.position.set(ally.x, 0, -ally.y);
+    e.group.rotation.y = ally.dir - Math.PI / 2;
+    // Fade to invisible during the deadT window (~2s), then hide entirely.
+    e.group.visible = ally.deadT < 2.0;
+    return;
+  }
+  const blocked = wallBetween(player.x, player.y, ally.x, ally.y);
+  e.group.visible = !blocked;
+  if (blocked) return;
+
+  // ----- position + facing -----
+  // Detect walking by the distance moved this frame — cheap and doesn't
+  // need to peek into the AI's decision logic.
+  const dx = ally.x - e.prevX, dy = ally.y - e.prevY;
+  const moved = Math.hypot(dx, dy);
+  const walking = moved > 0.002;
+  e.prevX = ally.x; e.prevY = ally.y;
+
+  e.group.rotation.x = 0;                           // clear death rotation if revived
+  e.group.rotation.y = ally.dir - Math.PI / 2;      // face where the AI is looking
+  e.group.rotation.z = 0;
+
+  // ----- walk cycle -----
+  // Legs and arms swing in counter-phase, driven by a phase accumulator
+  // that speeds up while moving and decays to zero at idle.
+  if (walking) {
+    e.walkT += dt * 9;                              // ~1.4 Hz cadence at typical ally.speed
+  } else {
+    e.walkT *= Math.max(0, 1 - dt * 6);             // decay so it doesn't freeze mid-swing
+  }
+  const legAmp = walking ? 0.45 : 0.0;
+  const armAmp = walking ? 0.20 : 0.0;
+  const sw = Math.sin(e.walkT);
+  e.legL.rotation.x = +sw * legAmp;
+  e.legR.rotation.x = -sw * legAmp;
+  e.armL.rotation.x = -sw * armAmp;                 // opposite side to matching leg
+  e.armR.rotation.x = +sw * armAmp;
+
+  // ----- idle breathing (small vertical bob) -----
+  const breath = Math.sin(world3d.t * 1.5) * (walking ? 0.002 : 0.006);
+  e.group.position.set(ally.x, breath, -ally.y);
+
+  // ----- muzzle flash pulse -----
+  // ally.muzzle is set by updateAlly() when it fires; peak 0.12s, decays.
+  const mf = Math.max(0, ally.muzzle / 0.12);
+  e.muzzleFlash.material.opacity = mf;
+  e.muzzleFlash.rotation.z += dt * 30;              // twinkle
+
+  // ----- hurt tint via emissive (100 ms red flash) -----
+  const hurt = Math.max(0, ally.hurt / 0.2);
+  e.chestMat.emissive.setRGB(hurt * 0.7, 0, 0);
+}
+
+function renderWorld3d(dt) {
+  if (!ENABLE_3D_ENTITIES) return;
+  if (!world3d.ready) { initWorld3d(); if (!world3d.ready) return; }
+  world3d.t += dt;
+
+  // ----- sync camera to player -----
+  // Flip grid Y -> -Three.js Z so screen handedness matches the raycaster
+  // (grid +Y is on the RIGHT of the raycaster's screen; in Three.js that's -Z).
+  const cam = world3d.camera;
+  cam.position.set(player.x, world3d.eyeH, -player.y);
+  // Convert player.pitch (px offset of the horizon) to an equivalent camera
+  // pitch in radians. The raycaster clamps pitch to ±H*0.6; using a
+  // proportional map to the vertical FOV keeps horizon lines aligned.
+  const vFovRad = cam.fov * Math.PI / 180;
+  const pitchRad = (player.pitch / H) * vFovRad;
+  const targetX = player.x + Math.cos(player.dir) * Math.cos(pitchRad);
+  const targetY = world3d.eyeH + Math.sin(pitchRad);
+  const targetZ = -player.y - Math.sin(player.dir) * Math.cos(pitchRad);
+  cam.lookAt(targetX, targetY, targetZ);
+
+  // ----- per-entity updates (batch 1: just the teammate) -----
+  updateTeammate(dt);
+
+  world3d.renderer.render(world3d.scene, cam);
+}
+
+// Keep the world3d canvas / renderer / camera aspect in sync with viewport.
+window.addEventListener("resize", () => {
+  if (!world3d.ready) return;
+  const w = window.innerWidth, h = window.innerHeight;
+  world3d.canvas.width = w; world3d.canvas.height = h;
+  world3d.renderer.setSize(w, h, false);
+  const aspect = w / h;
+  world3d.camera.aspect = aspect;
+  world3d.camera.fov = 2 * Math.atan(Math.tan(FOV / 2) / aspect) * 180 / Math.PI;
+  world3d.camera.updateProjectionMatrix();
+});
+// === /3D world entities ===
+
 // ---------- Render: minimap ----------
 const mm = $("minimap"), mmx = mm.getContext("2d");
 function renderMinimap() {
@@ -2096,6 +2403,9 @@ function frame(now) {
   }
   renderWorld();
   renderEnemies();
+  // === 3D world entities: draw the teammate + (future batches) enemies + boss.
+  // Runs BEFORE weapon layer so the viewmodel stays on top of world entities. ===
+  renderWorld3d(dt);
   renderWeapon();
   // === 3D weapons prototype: overlay render + layer visibility swap ===
   if (weapon && WEAPON_3D[weapon.vm]) render3dWeapon(dt);
