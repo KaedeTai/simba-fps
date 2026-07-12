@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>SIMBA FPS — 第一人稱射擊</title>
+<link rel="stylesheet" href="fps.css">
+<!-- === 3D weapons: Three.js (pinned r0.160) — powers the 3D viewmodel ===
+     Load order: local ./three.min.js first (works offline / on GitHub
+     Pages), then jsdelivr, unpkg, and cloudflare r128 as last resort.
+     Each document.write fallback runs during head parsing, so the next
+     script loads synchronously before fps.js executes. -->
+<script src="./three.min.js"></script>
+<script>
+  if (typeof THREE === "undefined") {
+    console.warn("[fps] Three.js local file missing — trying jsdelivr…");
+    document.write('<script src="https://cdn.jsdelivr.net/npm/three@0.160/build/three.min.js"><\/script>');
+  }
+</script>
+<script>
+  if (typeof THREE === "undefined") {
+    console.warn("[fps] Three.js jsdelivr load failed — trying unpkg…");
+    document.write('<script src="https://unpkg.com/three@0.160.0/build/three.min.js"><\/script>');
+  }
+</script>
+<script>
+  if (typeof THREE === "undefined") {
+    console.warn("[fps] Three.js unpkg load failed — trying cloudflare r128…");
+    document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"><\/script>');
+  }
+</script>
+<script>
+  if (typeof THREE === "undefined") {
+    console.error("[fps] All Three.js sources failed — weapons will fall back to PNG viewmodel.");
+  } else {
+    console.log("[fps] Three.js loaded, revision =", THREE.REVISION);
+  }
+</script>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <canvas id="weapon"></canvas>
+  <!-- === 3D pistol prototype: viewmodel overlay canvas (shown only for slot 1) === -->
+  <canvas id="weapon3d"></canvas>
+  <canvas id="minimap" width="150" height="150"></canvas>
+
+  <div id="hud">
+    <div id="crosshair"></div>
+    <div id="bossbar" class="hidden">
+      <div id="bossname">👹 首領</div>
+      <div id="bosshp-wrap"><div id="bosshp"></div></div>
+    </div>
+    <div id="banner"></div>
+    <div id="score" class="stat"><span class="label">得分 · 波數 · 擊殺</span><span id="scoreval">0</span> · <span id="waveval">1</span> · <span id="killval">0</span></div>
+    <div id="coins">💰 <span id="coinval">0</span>　<span style="opacity:.5;font-size:12px">按 B 開商店</span></div>
+    <div id="health" class="stat">
+      <span class="label">生命值</span>
+      <div style="display:flex;align-items:center;gap:12px;">
+        <span class="big" id="hpval" style="color:#ff5a5a">100</span>
+        <div id="hpbar-wrap"><div id="hpbar"></div></div>
+      </div>
+      <div id="allystat">
+        <span style="color:#4dd0ff">👤 隊友</span>
+        <div id="allyhp-wrap"><div id="allyhp"></div></div>
+        <span id="allytxt" style="color:#4dd0ff;font-size:12px"></span>
+      </div>
+    </div>
+    <div id="ammo" class="stat"><span class="label" id="wepname">手槍</span><span class="big" id="ammoval">12</span> / <span id="ammomax">12</span></div>
+    <div id="wepbar"></div>
+  </div>
+
+  <div id="flash"></div>
+  <div id="hurt"></div>
+
+  <!-- Touch controls (tablet / phone) -->
+  <div id="touchui">
+    <div class="touchbtn" id="btnFire">射擊</div>
+    <div class="touchbtn" id="btnReload">換彈</div>
+    <div class="touchbtn" id="btnSwitch">切槍</div>
+    <div class="touchbtn" id="btnSprint">衝刺</div>
+    <div class="touchbtn" id="btnShop">商店</div>
+    <div class="touchbtn" id="btnPause">‖‖</div>
+  </div>
+  <div id="stickbase"></div>
+  <div id="stickknob"></div>
+
+  <div id="start" class="screen">
+    <h1>SIMBA · FPS</h1>
+    <p>第一人稱射擊。一開始只有<b style="color:#ffd45a">手槍</b>，隨著波數推進，商店會逐步開放更多武器（共 9 種）。<br>每 5 波出現血低會狂暴的<b style="color:#ff6bdf">首領</b>，擊倒可獲大量金幣。可選擇是否帶 <b style="color:#4dd0ff">AI 隊友</b>。</p>
+    <div class="keys">
+      <b>W A S D</b> 移動 &nbsp;·&nbsp; <b>滑鼠</b> 瞄準 &nbsp;·&nbsp; <b>左鍵</b> 射擊<br>
+      <b>1-9</b> / <b>滾輪</b> / <b>Q E</b> 切換武器 &nbsp;·&nbsp; <b>R</b> 換彈<br>
+      <b>Shift</b> 衝刺 &nbsp;·&nbsp; <b>B</b> 商店 &nbsp;·&nbsp; <b>ESC</b> 暫停
+    </div>
+    <div class="setup-row">
+      <span>帳號存檔：</span>
+      <input id="acct" type="text" maxlength="16" placeholder="輸入名稱" autocomplete="off">
+      <label class="toggle"><input id="allytoggle" type="checkbox" checked> 使用 AI 隊友</label>
+      <label class="toggle"><input id="touchtoggle" type="checkbox"> 觸控控制（平板）</label>
+    </div>
+    <div id="profstats"></div>
+    <div style="margin:6px 0 2px;font-size:13px;opacity:.75">選擇地圖：</div>
+    <div id="mapsel"></div>
+    <p style="font-size:12px;opacity:.6">存檔會保存在此瀏覽器（金幣、體質升級、最佳紀錄會帶到下一局）。<br>桌機：滑鼠瞄準／鎖定，ESC 暫停。&nbsp;平板：左半螢幕搖桿移動，右半拖曳看方向，按鈕射擊。</p>
+    <button class="btn" id="startBtn">開始遊戲</button>
+  </div>
+
+  <div id="over" class="screen hidden">
+    <h1 class="dead">你陣亡了</h1>
+    <p id="final">得分：0</p>
+    <button class="btn" id="retryBtn">再來一次</button>
+  </div>
+
+  <div id="pause" class="screen hidden">
+    <h1>已暫停</h1>
+    <p>點擊畫面繼續遊戲</p>
+    <button class="btn" id="resumeBtn">繼續</button>
+    <!-- === persistence: reset button clears the auto-resume save === -->
+    <div style="margin-top:32px;opacity:.55;font-size:12px;letter-spacing:2px">危險區域</div>
+    <button class="btn btn-warn" id="resetBtn">重置遊戲（清除存檔）</button>
+  </div>
+
+  <div id="shop" class="screen hidden">
+    <h1 style="color:#ffd45a;text-shadow:0 0 20px rgba(255,212,90,.5)">武器商店</h1>
+    <p id="shopcoins">💰 金幣：0</p>
+    <p id="shopmsg" style="min-height:20px;color:#7dff9a;font-size:13px">&nbsp;</p>
+    <div id="shopgrid"></div>
+    <button class="btn" id="shopClose">下一波 →</button>
+  </div>
+
+<script src="fps.js"></script>
+</body>
+</html>

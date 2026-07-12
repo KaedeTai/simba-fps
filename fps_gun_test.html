@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>FPS gun sprite test</title>
+<style>
+  body { margin: 0; padding: 16px; background: #111; color: #eee;
+         font-family: -apple-system, "Courier New", monospace; }
+  h1 { font-size: 16px; margin: 0 0 12px; color: #7dff9a; }
+  .row { display: flex; flex-wrap: wrap; gap: 12px; }
+  .cell { background: #000; border: 1px solid #333; padding: 6px; }
+  .cell h3 { margin: 0 0 4px; font-size: 12px; color: #ffd45a; }
+  .cell p { margin: 0 0 4px; font-size: 11px; color: #888; }
+  canvas { display: block; background: #2a2a2a; }
+  .ok { color: #7dff9a; } .err { color: #ff5a5a; }
+</style>
+</head>
+<body>
+<h1>FPS gun sprite test — open the console (F12) too</h1>
+<div class="row" id="row"></div>
+<script>
+const guns = ["pistol", "smg", "shotgun", "rifle"];
+const cfg = {
+  pistol:  { grip: [0.70, 0.82], muzzle: [0.18, 0.18], scale: 0.42 },
+  smg:     { grip: [0.66, 0.84], muzzle: [0.20, 0.14], scale: 0.42 },
+  shotgun: { grip: [0.78, 0.90], muzzle: [0.10, 0.10], scale: 0.34 },
+  rifle:   { grip: [0.70, 0.88], muzzle: [0.10, 0.10], scale: 0.38 },
+};
+
+const row = document.getElementById("row");
+for (const gun of guns) {
+  const wrap = document.createElement("div");
+  wrap.className = "cell";
+  wrap.innerHTML = `<h3>${gun}</h3><p id="status-${gun}">loading…</p><canvas id="cv-${gun}" width="280" height="220"></canvas>`;
+  row.appendChild(wrap);
+}
+
+for (const gun of guns) {
+  const c = cfg[gun];
+  const cv = document.getElementById("cv-" + gun);
+  const ctx = cv.getContext("2d");
+  const statusEl = document.getElementById("status-" + gun);
+  const img = new Image();
+  img.onload = () => {
+    statusEl.innerHTML = `<span class="ok">✓ loaded ${img.naturalWidth}x${img.naturalHeight}</span>`;
+    const scale = c.scale;
+    const iw = img.naturalWidth, ih = img.naturalHeight;
+    const gx = c.grip[0] * iw, gy = c.grip[1] * ih;
+    const dx = 140 - gx * scale;
+    const dy = 220 - gy * scale;
+    try {
+      ctx.drawImage(img, dx, dy, iw * scale, ih * scale);
+      statusEl.innerHTML += ` — drawn OK`;
+    } catch (e) {
+      statusEl.innerHTML += ` — <span class="err">drawImage threw: ${e.message}</span>`;
+    }
+  };
+  img.onerror = (e) => {
+    statusEl.innerHTML = `<span class="err">✗ failed to load fps_assets/${gun}.png</span>`;
+  };
+  img.src = `fps_assets/${gun}.png`;
+}
+</script>
+</body>
+</html>
