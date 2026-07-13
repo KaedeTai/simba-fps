@@ -2168,9 +2168,25 @@ async function createTeammateFromMixamo() {
   // Start on Idle
   if (actions.Idle) actions.Idle.play();
 
-  // Some materials from Mixamo GLB export can look flat/washed-out; give the
-  // model shadow flags so our directional lights pick out silhouette edges.
-  model.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+  // Re-tag color-carrying textures with the modern sRGB color space. r128
+  // GLTFLoader sets the OLD `texture.encoding = THREE.sRGBEncoding` field,
+  // which is undefined in r160 — so without this fix, base-color and
+  // emissive maps get treated as linear data and render extremely dark
+  // (the "everything is black" bug). Data maps (normal / roughness /
+  // metalness / AO) legitimately stay in linear color space.
+  model.traverse(o => {
+    if (!o.isMesh) return;
+    o.castShadow = true; o.receiveShadow = true;
+    const mats = Array.isArray(o.material) ? o.material : [o.material];
+    for (const m of mats) {
+      if (!m) continue;
+      if (THREE.SRGBColorSpace !== undefined) {
+        if (m.map)         m.map.colorSpace         = THREE.SRGBColorSpace;
+        if (m.emissiveMap) m.emissiveMap.colorSpace = THREE.SRGBColorSpace;
+      }
+      m.needsUpdate = true;
+    }
+  });
 
   console.log("[fps][world3d] mixamo load OK", {
     scale: scale.toFixed(4),
@@ -2358,10 +2374,21 @@ function initWorld3d() {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     renderer.setSize(canvas.width, canvas.height, false);
     renderer.setClearColor(0x000000, 0);              // transparent — see the 2D raycaster through it
+    // Three.js r155 renamed outputEncoding -> outputColorSpace and made
+    // SRGBColorSpace the default for the output pipeline. r128 GLTFLoader
+    // still writes the old `texture.encoding = sRGBEncoding` (which is
+    // undefined in r160), so we set the output space explicitly here and
+    // re-tag the loaded Vanguard textures inside createTeammateFromMixamo.
+    if (THREE.SRGBColorSpace !== undefined) renderer.outputColorSpace = THREE.SRGBColorSpace;
+    // Also keep the pre-r155 non-physical light math so the intensity
+    // values below match what worked in earlier revisions of this scene.
+    if ("useLegacyLights" in renderer) renderer.useLegacyLights = true;
 
-    scene.add(new THREE.AmbientLight(0xffffff, 0.55));
-    const key = new THREE.DirectionalLight(0xfff2c8, 0.75); key.position.set( 2, 4,  1); scene.add(key);
-    const rim = new THREE.DirectionalLight(0x9ac0ff, 0.30); rim.position.set(-2, 2, -3); scene.add(rim);
+    // Lights bumped up from the earlier procedural-only values now that
+    // the Vanguard mesh (with real PBR textures) shares this scene.
+    scene.add(new THREE.AmbientLight(0xffffff, 0.85));
+    const key = new THREE.DirectionalLight(0xfff2c8, 1.10); key.position.set( 2, 4,  1); scene.add(key);
+    const rim = new THREE.DirectionalLight(0x9ac0ff, 0.45); rim.position.set(-2, 2, -3); scene.add(rim);
 
     // Build entities up front. Each entity stashes its animation state on
     // its own record so the render loop is a simple for-each dispatch.

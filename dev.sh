@@ -5,15 +5,15 @@
 # same-origin restrictions in most browsers).
 #
 # Usage:
-#   ./dev.sh          # start server on :8000, open browser, block until Ctrl+C
+#   ./dev.sh          # start server on :8008, open browser, block until Ctrl+C
 #   PORT=9000 ./dev.sh
 #
-# Ctrl+C or `kill $(lsof -ti :8000)` to stop.
+# Ctrl+C or `kill $(lsof -ti :8008)` to stop.
 
 set -euo pipefail
 cd "$(dirname "$0")"
 
-PORT="${PORT:-8000}"
+PORT="${PORT:-8008}"
 URL="http://localhost:${PORT}/"
 
 # Kill any stale server bound to this port so a repeated `./dev.sh` doesn't
