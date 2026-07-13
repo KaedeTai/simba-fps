@@ -341,7 +341,18 @@ function loadRun() {
 }
 
 function clearRun() {
-  try { localStorage.removeItem(RUN_KEY); } catch (e) {}
+  try {
+    localStorage.removeItem(RUN_KEY);
+    // Verify the removal took — a silent try/catch used to hide the case
+    // where localStorage was in a state that ignored writes.
+    const stillThere = localStorage.getItem(RUN_KEY);
+    if (stillThere !== null) {
+      console.error("[fps][save] clearRun: removeItem returned but key STILL present:",
+        String(stillThere).slice(0, 60));
+    }
+  } catch (e) {
+    console.warn("[fps][save] clearRun threw:", e);
+  }
 }
 
 // Rebuild the whole world from a save blob. Called at page load if a
@@ -3396,7 +3407,23 @@ document.addEventListener("visibilitychange", () => {
 $("resetBtn").onclick = () => {
   if (!confirm("重置會清除當前存檔並回到主選單,確定嗎?")) return;
   console.log("[fps][save] state cleared by user, reloading");
+  // CRITICAL: neutralize saveRun before location.reload() triggers
+  // beforeunload / pagehide / visibilitychange, all three of which call
+  // saveRun(). That was RE-WRITING the run state we just cleared,
+  // undoing the reset before the page navigated. saveRun's guard is
+  // `if (!running || gameOver) return;` — so flipping either flag
+  // neutralizes it. Setting BOTH to be extra explicit.
+  running = false;
+  gameOver = true;
   clearRun();
+  // Verify the clear stuck before we navigate — if it didn't, the
+  // reload would just auto-resume again.
+  const post = localStorage.getItem(RUN_KEY);
+  if (post !== null) {
+    console.error("[fps][save] clearRun didn't take — reload would re-resume. Sample:", String(post).slice(0, 60));
+  } else {
+    console.log("[fps][save] verified: run key removed, reloading now");
+  }
   location.reload();
 };
 
