@@ -2168,18 +2168,35 @@ async function createTeammateFromMixamo() {
   // Start on Idle
   if (actions.Idle) actions.Idle.play();
 
-  // Re-tag color-carrying textures with the modern sRGB color space. r128
-  // GLTFLoader sets the OLD `texture.encoding = THREE.sRGBEncoding` field,
-  // which is undefined in r160 — so without this fix, base-color and
-  // emissive maps get treated as linear data and render extremely dark
-  // (the "everything is black" bug). Data maps (normal / roughness /
+  // Re-tag color-carrying textures with the modern sRGB color space AND
+  // clamp the reflectivity down. fbx2gltf exports Mixamo characters with
+  // metallicFactor=0.4 + roughnessFactor=0.3 (verified via GLB JSON
+  // inspection). Without an environment map (this scene has none), a
+  // 40%-metallic 70%-smooth surface renders as near-mirror black —
+  // exactly the "shiny-black" bug. Metals have no diffuse response;
+  // they only reflect the environment. We force fully-diffuse (metalness
+  // 0) and rough (roughness 0.85) so the base-color texture actually
+  // reads.
+  //
+  // sRGB tagging: r128 GLTFLoader sets the OLD `texture.encoding =
+  // THREE.sRGBEncoding` field (undefined in r160), so we set the new
+  // colorSpace field explicitly. Data maps (normal / roughness /
   // metalness / AO) legitimately stay in linear color space.
+  const mixamoMatDebug = [];
   model.traverse(o => {
     if (!o.isMesh) return;
     o.castShadow = true; o.receiveShadow = true;
     const mats = Array.isArray(o.material) ? o.material : [o.material];
     for (const m of mats) {
       if (!m) continue;
+      mixamoMatDebug.push({
+        name: m.name, metalness_before: m.metalness, roughness_before: m.roughness,
+        hasMap: !!m.map, hasNormal: !!m.normalMap,
+      });
+      // Clamp reflectivity so it doesn't render mirror-black without an env map.
+      if (m.metalness !== undefined && m.metalness > 0.15) m.metalness = 0.0;
+      if (m.roughness !== undefined && m.roughness < 0.7)  m.roughness = 0.85;
+      // sRGB tag the color textures.
       if (THREE.SRGBColorSpace !== undefined) {
         if (m.map)         m.map.colorSpace         = THREE.SRGBColorSpace;
         if (m.emissiveMap) m.emissiveMap.colorSpace = THREE.SRGBColorSpace;
@@ -2187,6 +2204,7 @@ async function createTeammateFromMixamo() {
       m.needsUpdate = true;
     }
   });
+  console.log("[fps][world3d] mixamo materials patched", mixamoMatDebug);
 
   console.log("[fps][world3d] mixamo load OK", {
     scale: scale.toFixed(4),
@@ -2409,12 +2427,15 @@ function initWorld3d() {
     createTeammateFromMixamo().then(mixamoTeammate => {
       const cur = world3d.entities.teammate;
       // Preserve tracking state so the state machine doesn't miss beats
-      // (aimDir snapshot, prev-position, wasDead flag).
+      // (aimDir snapshot, prev-position, wasDead flag) AND — critical —
+      // carry over the current facing direction so we don't reset to
+      // rotation.y=0 (mesh's default forward) at the swap moment.
       mixamoTeammate.aimDir     = cur.aimDir;
       mixamoTeammate.prevMuzzle = cur.prevMuzzle;
       mixamoTeammate.prevX      = cur.prevX;
       mixamoTeammate.prevY      = cur.prevY;
       mixamoTeammate.wasDead    = cur.wasDead;
+      mixamoTeammate.group.rotation.y = cur.group.rotation.y;
       // Swap in the scene graph.
       scene.remove(cur.group);
       scene.add(mixamoTeammate.group);
@@ -2429,16 +2450,29 @@ function initWorld3d() {
 }
 
 // Cross-fade helper for the Mixamo state machine. No-op if the new state
-// is already current or the target clip didn't load.
+// is already current or the target clip didn't load. Enforces a minimum
+// dwell time on the current state so per-frame movement-jitter doesn't
+// crossfade Walking↔Idle every tick (visible as "walk animation stutters"
+// / "跳針"). High-priority states (Dying, HitReact, Firing) bypass the
+// hold so damage / death respond immediately.
+const _ANIM_HOLD_MS = 200;                            // minimum dwell per state
+const _ANIM_PRIORITY = { Dying: 3, HitReact: 2, Firing: 1, Walking: 0, Idle: 0 };
 function _crossfadeTeammate(e, next, dur = 0.15) {
   if (!e.isMixamo || !e.actions) return;
   if (next === e.current) return;
+  // Priority override: higher-priority state can preempt the hold.
+  const newP = _ANIM_PRIORITY[next] ?? 0;
+  const curP = _ANIM_PRIORITY[e.current] ?? 0;
+  const held = (e.stateHoldT || 0) > 0;
+  if (held && newP <= curP) return;                   // still holding low-priority state
   const oldAct = e.actions[e.current];
   const newAct = e.actions[next];
   if (!newAct) return;
   if (oldAct) oldAct.fadeOut(dur);
   newAct.reset().fadeIn(dur).play();
+  console.log("[fps][world3d] anim state:", e.current, "->", next);
   e.current = next;
+  e.stateHoldT = _ANIM_HOLD_MS / 1000;                // arm the hold timer
 }
 
 function updateTeammate(dt) {
@@ -2448,6 +2482,9 @@ function updateTeammate(dt) {
   // Mixamo: always tick the animation mixer so poses interpolate between
   // frames. Skipped for procedural (has no mixer).
   if (e.isMixamo && e.mixer) e.mixer.update(dt);
+  // Decay the state-hold timer used by _crossfadeTeammate to prevent
+  // sub-frame flapping between Idle and Walking.
+  if (e.stateHoldT > 0) e.stateHoldT -= dt;
 
   // ----- occlusion & death -----
   // Hide when wall blocks LOS OR when ally has despawned. Two animation
@@ -2515,33 +2552,53 @@ function updateTeammate(dt) {
   const walking = moved > 0.002;
   e.prevX = ally.x; e.prevY = ally.y;
 
-  // ----- facing: only update when firing or walking; idle preserves last frame
-  // Same rationale as the previous fix (idle no longer stares at player) —
-  // now with the fire branch using the aim SNAPSHOT so the target-dies-mid-
-  // flash edge case also preserves.
+  // ----- facing: firing snaps to aim, walking uses snap-once + drift-lock,
+  // idle preserves. Reworked from the previous "angle-gate every frame"
+  // because that still let the teammate slowly track the player whenever
+  // the walk velocity happened to align with current facing (which it does
+  // constantly when the AI is set to follow the player).
+  //
+  // New rules:
+  //   Firing (muzzle > 0)  → snap rotation to aim SNAPSHOT (unchanged)
+  //   Walking, fresh start → snap to first movement direction (walkFacingLocked=true)
+  //   Walking, stable dir  → preserve locked direction (no drift toward player)
+  //   Walking, dir changed → snap to new direction if delta > 90° from
+  //                          current facing (a genuinely-new heading)
+  //   Idle (>0.5s)         → unlock, next walking start will re-snap
   if (ally.muzzle > 0) {
-    e.group.rotation.y = Math.PI / 2 - e.aimDir;      // snapshot, not live ally.dir
+    e.group.rotation.y = Math.PI / 2 - e.aimDir;
+    e.walkFacingLocked = false;                       // firing resets lock
+    e.idleTimer = 0;
   } else if (walking) {
-    // Angle-gate: only update rotation.y when the movement direction is
-    // within 60° of the teammate's current facing. Beyond that, the
-    // teammate walks sideways or backwards without turning — which is
-    // what happens when the player is retreating and the AI has the
-    // teammate follow. Without this gate the teammate pirouettes to
-    // face the player every time the player backs away.
-    //   |delta| < 60°   → forward-ish; smoothly rotate to face velocity
-    //   60° ≤ |delta| < 120°  → strafe;   preserve current facing
-    //   |delta| ≥ 120°  → backpedal;      preserve current facing
+    e.idleTimer = 0;
     const moveDir = Math.atan2(dy, dx);
     const desiredRotY = Math.PI / 2 - moveDir;
-    let delta = desiredRotY - e.group.rotation.y;
-    while (delta > Math.PI)  delta -= 2 * Math.PI;    // wrap to [-PI, PI]
-    while (delta < -Math.PI) delta += 2 * Math.PI;
-    if (Math.abs(delta) < Math.PI / 3) {
+    if (!e.walkFacingLocked) {
+      // First frame of a walking session — snap facing to velocity.
       e.group.rotation.y = desiredRotY;
+      e.walkFacingLocked = true;
+    } else {
+      // Only re-snap on a big heading change (>90° from current facing).
+      // Small drift keeps facing untouched so the teammate can approach
+      // the player without slowly turning to face them.
+      let delta = desiredRotY - e.group.rotation.y;
+      while (delta > Math.PI)  delta -= 2 * Math.PI;
+      while (delta < -Math.PI) delta += 2 * Math.PI;
+      if (Math.abs(delta) > Math.PI / 2) {
+        // Big heading change (e.g. teammate started walking in the
+        // opposite direction) — treat as a new session and re-snap.
+        e.group.rotation.y = desiredRotY;
+      }
+      // else: preserve locked facing (stable straight walk toward player
+      //       no longer drifts the body to face them).
     }
-    // else: preserve — teammate walks sideways or backwards, body doesn't turn
+  } else {
+    // Idle. Preserve rotation. Unlock walking-facing after brief hold so
+    // a resumed walk gets a fresh snap; don't unlock instantly so
+    // sub-frame velocity jitter doesn't re-trigger the snap every tick.
+    e.idleTimer = (e.idleTimer || 0) + dt;
+    if (e.idleTimer > 0.4) e.walkFacingLocked = false;
   }
-  // else: preserve last rotation.y (idle, or firing-just-ended)
 
   // ----- position (world) — always Y=0 for Mixamo (mesh's own feet-anchor)
   // and for procedural (torsoGroup handles bob) --------------------------
