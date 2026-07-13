@@ -1006,9 +1006,11 @@ function update(dt) {
   if (hurtT > 0) hurtT -= dt;
   if (mouseDown && weapon.auto) tryShoot();
 
-  // Movement — combine keyboard and touch joystick into forward/strafe scalars
+  // Movement — combine keyboard and touch joystick into forward/strafe scalars.
+  // Backward speed is 0.5x forward (tactical realism); sprint only boosts
+  // pure forward movement (fwd > 0), not backpedal or pure strafe.
+  const BACKWARD_MULT = 0.5;
   const sprinting = keys["ShiftLeft"] || keys["ShiftRight"] || touchSprint;
-  const spd = (sprinting ? player.sprint : player.speed) * dt;
   const cos = Math.cos(player.dir), sin = Math.sin(player.dir);
   let fwd = 0, strafe = 0;
   if (keys["KeyW"]) fwd += 1;
@@ -1016,11 +1018,18 @@ function update(dt) {
   if (keys["KeyD"]) strafe += 1;
   if (keys["KeyA"]) strafe -= 1;
   if (stick.id !== null) { fwd += -stick.dy; strafe += stick.dx; }   // joystick: up = forward
+  // Sprint gate: only when net forward input is positive (holding W /
+  // pushing stick forward). Pure strafe (A/D) and backpedal (S) use
+  // base speed even if Shift is held.
+  const spd = ((sprinting && fwd > 0) ? player.sprint : player.speed) * dt;
   let mvx = cos * fwd - sin * strafe;
   let mvy = sin * fwd + cos * strafe;
   const mlen = Math.hypot(mvx, mvy);
   if (mlen > 0) {
     mvx = mvx / mlen * spd; mvy = mvy / mlen * spd;
+    // Backward penalty applied after normalization so W+D matches W speed
+    // but S / S+A / S+D take the 0.5x hit on the whole vector.
+    if (fwd < 0) { mvx *= BACKWARD_MULT; mvy *= BACKWARD_MULT; }
     const buf = 0.18;
     if (!isWall(player.x + mvx + Math.sign(mvx) * buf, player.y)) player.x += mvx;
     if (!isWall(player.x, player.y + mvy + Math.sign(mvy) * buf)) player.y += mvy;
@@ -2299,8 +2308,24 @@ function updateTeammate(dt) {
   if (ally.muzzle > 0) {
     e.group.rotation.y = Math.PI / 2 - e.aimDir;      // snapshot, not live ally.dir
   } else if (walking) {
+    // Angle-gate: only update rotation.y when the movement direction is
+    // within 60° of the teammate's current facing. Beyond that, the
+    // teammate walks sideways or backwards without turning — which is
+    // what happens when the player is retreating and the AI has the
+    // teammate follow. Without this gate the teammate pirouettes to
+    // face the player every time the player backs away.
+    //   |delta| < 60°   → forward-ish; smoothly rotate to face velocity
+    //   60° ≤ |delta| < 120°  → strafe;   preserve current facing
+    //   |delta| ≥ 120°  → backpedal;      preserve current facing
     const moveDir = Math.atan2(dy, dx);
-    e.group.rotation.y = Math.PI / 2 - moveDir;
+    const desiredRotY = Math.PI / 2 - moveDir;
+    let delta = desiredRotY - e.group.rotation.y;
+    while (delta > Math.PI)  delta -= 2 * Math.PI;    // wrap to [-PI, PI]
+    while (delta < -Math.PI) delta += 2 * Math.PI;
+    if (Math.abs(delta) < Math.PI / 3) {
+      e.group.rotation.y = desiredRotY;
+    }
+    // else: preserve — teammate walks sideways or backwards, body doesn't turn
   }
   // else: preserve last rotation.y (idle, or firing-just-ended)
 
