@@ -688,6 +688,12 @@ function startGame() {
   // Phase 1: rebuild 3D wall geometry to match the newly-loaded map.
   // No-op if world3d isn't ready yet or USE_3D_WORLD is false.
   if (typeof rebuildWorld3d === "function") rebuildWorld3d();
+  // Phase 2: clear leftover enemy meshes from any previous run so we
+  // don't leak orphaned Groups when the roster resets to empty.
+  if (world3d && world3d.enemyMeshes) {
+    for (const rec of world3d.enemyMeshes.values()) world3d.scene.remove(rec.group);
+    world3d.enemyMeshes.clear();
+  }
   const sp = MAPS[curMap].spawn;
   player.maxHp = profile.maxHp || 100;           // carry over max-HP upgrades
   player.x = sp.x; player.y = sp.y; player.dir = 0; player.pitch = 0; player.hp = player.maxHp;
@@ -1117,6 +1123,16 @@ function update(dt) {
 // ---------- Render: walls (raycasting DDA) ----------
 const zbuffer = new Float32Array(8192);
 function renderWorld() {
+  // Phase 2: when USE_3D_WORLD is on, world3d covers the whole viewport
+  // (walls + floor + ceiling as textured Three.js meshes). Skip the 2D
+  // floor/ceiling gradient AND the wall paint below — but keep the DDA
+  // march running so zbuffer[] remains populated for any consumer that
+  // still peeks at it (belt-and-braces; enemies no longer use it).
+  if (USE_3D_WORLD) {
+    // clear the 2D canvas to fully transparent so nothing beneath is
+    // painted (world3d canvas covers it, but be explicit).
+    ctx.clearRect(0, 0, W, H);
+  }
   // Camera head-bob during movement removed per user request (motion-
   // comfort). player.bob is still accumulated by the movement code
   // so the weapon viewmodel bob keeps its animated value.
@@ -1124,12 +1140,14 @@ function renderWorld() {
   const hz = Math.max(1, Math.min(H - 1, horizon));   // clamp only for gradient endpoints
   const top = Math.max(0, horizon);
 
+  if (!USE_3D_WORLD) {
   const g1 = ctx.createLinearGradient(0, 0, 0, hz);
   g1.addColorStop(0, "#0b0f1a"); g1.addColorStop(1, "#20293b");
   ctx.fillStyle = g1; ctx.fillRect(0, 0, W, top);
   const g2 = ctx.createLinearGradient(0, hz, 0, H);
   g2.addColorStop(0, "#2a2118"); g2.addColorStop(1, "#0a0806");
   ctx.fillStyle = g2; ctx.fillRect(0, top, W, H - top);
+  }   // end of !USE_3D_WORLD 2D floor/ceiling gradient guard
 
   const startAng = player.dir - FOV / 2;
   const step = FOV / NUM_RAYS;
@@ -1189,6 +1207,9 @@ function renderWorld() {
 
 // ---------- Render: enemies + ally (billboards) ----------
 function renderEnemies() {
+  // Phase 2: enemies now render as 3D humanoid meshes inside world3d.
+  // Skip the 2D billboard pass entirely when the 3D world is active.
+  if (USE_3D_WORLD) return;
   const horizon = HALF_H + player.pitch;                 // camera head-bob removed
   const sprites = enemies.slice();
   // === 3D world entities: when the 3D layer is active, the teammate is drawn
@@ -2481,20 +2502,186 @@ function createTeammateMesh() {
   };
 }
 
-// Phase 1: build the raycaster's MAP grid as real 3D wall geometry inside
-// world3d.scene. One BoxGeometry (1×1×1 unit, centered at Y=0.5) per wall
-// cell. Floor and ceiling are DELIBERATELY NOT included in Phase 1 — the
-// 2D floor gradient painted by renderWorld() and the enemy billboards
-// drawn on #game canvas both need to remain visible through the
-// world3d overlay. Adding opaque floor/ceiling planes would cover them.
-// Phase 2 will migrate enemies to 3D sprites, at which point we can add
-// the floor+ceiling meshes and turn off the 2D gradient.
+// Phase 2 — procedural texture helpers.
+// All zero-external-asset: everything drawn to an offscreen canvas at load
+// time, wrapped in a THREE.CanvasTexture. Textures cached on world3d so
+// rebuilding walls on a map change doesn't leak or re-canvas.
+function _makeCanvas(size) {
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  return c;
+}
+function _buildWallTexture(rgb) {
+  // Brick pattern in the map's wall color. 4 rows × 4 bricks, staggered.
+  const c = _makeCanvas(256);
+  const g = c.getContext("2d");
+  g.fillStyle = `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
+  g.fillRect(0, 0, 256, 256);
+  g.fillStyle = "rgba(0,0,0,0.35)";
+  const rowH = 32, brickW = 64;
+  for (let y = 0; y < 256; y += rowH) {
+    const stagger = (y / rowH) % 2 === 0 ? 0 : brickW / 2;
+    g.fillRect(0, y, 256, 2);                                  // horizontal mortar
+    for (let x = stagger; x < 256 + brickW; x += brickW) {
+      g.fillRect(x, y, 2, rowH);                               // vertical mortar
+    }
+  }
+  // Per-brick shading noise so identical repeats don't look tiled
+  for (let by = 0; by < 256; by += rowH) {
+    const stagger = (by / rowH) % 2 === 0 ? 0 : brickW / 2;
+    for (let bx = stagger; bx < 256; bx += brickW) {
+      g.fillStyle = `rgba(0,0,0,${Math.random() * 0.15})`;
+      g.fillRect(bx + 2, by + 2, brickW - 4, rowH - 4);
+    }
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  if (THREE.SRGBColorSpace !== undefined) tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  return tex;
+}
+function _buildFloorTexture() {
+  const c = _makeCanvas(128);
+  const g = c.getContext("2d");
+  g.fillStyle = "#3a3530";
+  g.fillRect(0, 0, 128, 128);
+  // Stone-tile mortar cross
+  g.strokeStyle = "#1a1512"; g.lineWidth = 2;
+  g.strokeRect(1, 1, 126, 126);
+  g.beginPath(); g.moveTo(64, 0); g.lineTo(64, 128); g.stroke();
+  g.beginPath(); g.moveTo(0, 64); g.lineTo(128, 64); g.stroke();
+  // Darkening speckle
+  for (let i = 0; i < 350; i++) {
+    g.fillStyle = `rgba(0,0,0,${Math.random() * 0.30})`;
+    g.fillRect(Math.random() * 128 | 0, Math.random() * 128 | 0, 2, 2);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  if (THREE.SRGBColorSpace !== undefined) tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  return tex;
+}
+function _buildCeilingTexture() {
+  const c = _makeCanvas(128);
+  const g = c.getContext("2d");
+  g.fillStyle = "#181d2a";
+  g.fillRect(0, 0, 128, 128);
+  g.strokeStyle = "#0a0d18"; g.lineWidth = 1;
+  g.strokeRect(1, 1, 126, 126);
+  g.beginPath(); g.moveTo(64, 0); g.lineTo(64, 128); g.stroke();
+  g.beginPath(); g.moveTo(0, 64); g.lineTo(128, 64); g.stroke();
+  // A few pin-light dots for atmosphere
+  for (let i = 0; i < 60; i++) {
+    g.fillStyle = `rgba(200,220,255,${Math.random() * 0.10 + 0.05})`;
+    g.fillRect(Math.random() * 128 | 0, Math.random() * 128 | 0, 1, 1);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  if (THREE.SRGBColorSpace !== undefined) tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  return tex;
+}
+// Phase 2 (user pivot): enemies as REAL 3D humanoid meshes, not sprites.
+// Same procedural primitive-stack approach as the teammate: box torso,
+// sphere head, cylinder limbs, everything a THREE.Group so we can add /
+// remove / animate freely. One factory function per enemy variant, keyed
+// off e.boss for now (grunt vs boss). Elite variant can slot in later
+// without disturbing the plumbing.
+function _createEnemyMesh(e) {
+  const isBoss = !!e.boss;
+  const g = new THREE.Group();
+
+  const bodyColor = isBoss ? 0x7c37a2 : 0x8f3232;
+  const darkColor = isBoss ? 0x26123c : 0x3a1414;
+  const trimColor = isBoss ? 0xffcf3b : 0xe59a9a;
+  const eyeHex    = isBoss ? 0xffd12b : 0xff4b4b;
+
+  const bodyMat  = new THREE.MeshStandardMaterial({ color: bodyColor, roughness: 0.85, metalness: 0.10 });
+  const darkMat  = new THREE.MeshStandardMaterial({ color: darkColor, roughness: 0.90, metalness: 0.05 });
+  const trimMat  = new THREE.MeshStandardMaterial({ color: trimColor, roughness: 0.70, metalness: 0.30 });
+  const chestMat = new THREE.MeshStandardMaterial({ color: darkColor, roughness: 0.90 });   // hurt-tint target
+  const eyeMat   = new THREE.MeshStandardMaterial({
+    color: eyeHex, roughness: 0.30, emissive: eyeHex, emissiveIntensity: 0.9,
+  });
+
+  // Torso (main body)
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.50, 0.20), bodyMat);
+  torso.position.y = 0.55; g.add(torso);
+  // Chest plate — for hurt flash target
+  const chest = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.30, 0.05), chestMat);
+  chest.position.set(0, 0.60, 0.11); g.add(chest);
+  // Pauldrons
+  const shoulderL = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.08, 0.16), trimMat);
+  shoulderL.position.set(-0.21, 0.77, 0); g.add(shoulderL);
+  const shoulderR = shoulderL.clone();
+  shoulderR.position.x = +0.21; g.add(shoulderR);
+
+  // Head
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.12, 12, 10), bodyMat);
+  head.position.set(0, 0.94, 0); g.add(head);
+  // Glowing eyes
+  const eyeL = new THREE.Mesh(new THREE.SphereGeometry(0.022, 8, 6), eyeMat);
+  eyeL.position.set(-0.05, 0.96, 0.11); g.add(eyeL);
+  const eyeR = eyeL.clone();
+  eyeR.position.x = +0.05; g.add(eyeR);
+
+  // Boss horns — curved cones tilted outward
+  if (isBoss) {
+    const hornGeo = new THREE.ConeGeometry(0.030, 0.18, 6);
+    const hornL = new THREE.Mesh(hornGeo, trimMat);
+    hornL.position.set(-0.08, 1.06, 0);
+    hornL.rotation.z = +0.5; hornL.rotation.x = -0.3; g.add(hornL);
+    const hornR = hornL.clone();
+    hornR.position.x = +0.08;
+    hornR.rotation.z = -0.5; hornR.rotation.x = -0.3; g.add(hornR);
+  }
+
+  // Arms — pivoted at shoulder for swing animation
+  function makeArm(sideX) {
+    const arm = new THREE.Group();
+    arm.position.set(sideX, 0.77, 0);
+    const upper = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.24, 8), bodyMat);
+    upper.position.y = -0.12; arm.add(upper);
+    const fist  = new THREE.Mesh(new THREE.SphereGeometry(0.055, 10, 8), darkMat);
+    fist.position.y = -0.27; arm.add(fist);
+    return arm;
+  }
+  const armL = makeArm(-0.22); g.add(armL);
+  const armR = makeArm(+0.22); g.add(armR);
+
+  // Legs — pivoted at hip for walk cycle
+  function makeLeg(sideX) {
+    const leg = new THREE.Group();
+    leg.position.set(sideX, 0.32, 0);
+    const thigh = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.28, 8), darkMat);
+    thigh.position.y = -0.14; leg.add(thigh);
+    const shin  = new THREE.Mesh(new THREE.CylinderGeometry(0.050, 0.045, 0.25, 8), darkMat);
+    shin.position.y = -0.40; leg.add(shin);
+    const boot  = new THREE.Mesh(new THREE.BoxGeometry(0.080, 0.050, 0.13), darkMat);
+    boot.position.set(0, -0.54, 0.02); leg.add(boot);
+    return leg;
+  }
+  const legL = makeLeg(-0.08); g.add(legL);
+  const legR = makeLeg(+0.08); g.add(legR);
+
+  // Scale — the base mesh is ~1.06 units feet-to-top-of-head. Multiply
+  // by 0.55 (roughly matching TEAMMATE_SCALE 0.49 for consistent perceived
+  // size) and then by the enemy's sizeScale (2.4 for boss, 1 for grunt).
+  const scale = (e.sizeScale || 1) * 0.55;
+  g.scale.setScalar(scale);
+
+  return {
+    group: g, bodyMat, darkMat, chestMat,
+    armL, armR, legL, legR,
+    walkT: 0,
+  };
+}
+
+// Phase 1+2: build wall / floor / ceiling geometry with textured materials.
 function _buildWorld3dGeometry(scene) {
-  const wallColor = wallRGB
-    ? new THREE.Color(wallRGB[0] / 255, wallRGB[1] / 255, wallRGB[2] / 255)
-    : new THREE.Color(0x606880);
+  const wallTex = _buildWallTexture(wallRGB || [96, 108, 150]);
   const wallMat = new THREE.MeshStandardMaterial({
-    color: wallColor, roughness: 0.90, metalness: 0.05,
+    map: wallTex, roughness: 0.90, metalness: 0.05,
   });
   const wallGeo = new THREE.BoxGeometry(1, 1, 1);
   const wallsGroup = new THREE.Group();
@@ -2503,16 +2690,103 @@ function _buildWorld3dGeometry(scene) {
     for (let x = 0; x < MAP_W; x++) {
       if (MAP[y][x] !== 1) continue;
       const wall = new THREE.Mesh(wallGeo, wallMat);
-      wall.position.set(x + 0.5, 0.5, y + 0.5);   // center rests at Y=0.5
+      wall.position.set(x + 0.5, 0.5, y + 0.5);
       wallsGroup.add(wall);
       wallCount++;
     }
   }
   scene.add(wallsGroup);
-  console.log("[fps][world3d] Phase 1 geometry built", {
-    walls: wallCount, map: MAP_W + "x" + MAP_H,
+
+  // Floor plane — tiled stone. Repeat = one tile per world unit so the
+  // pattern grid aligns with wall cells.
+  const floorTex = _buildFloorTexture();
+  floorTex.repeat.set(MAP_W, MAP_H);
+  const floorGeo = new THREE.PlaneGeometry(MAP_W, MAP_H);
+  const floorMat = new THREE.MeshStandardMaterial({ map: floorTex, roughness: 0.95 });
+  const floor = new THREE.Mesh(floorGeo, floorMat);
+  floor.rotation.x = -Math.PI / 2;
+  floor.position.set(MAP_W / 2, 0, MAP_H / 2);
+  scene.add(floor);
+
+  // Ceiling plane — darker tiled panel, faint pin-lights.
+  const ceilTex = _buildCeilingTexture();
+  ceilTex.repeat.set(MAP_W, MAP_H);
+  const ceilMat = new THREE.MeshStandardMaterial({ map: ceilTex, roughness: 0.95 });
+  const ceiling = new THREE.Mesh(floorGeo.clone(), ceilMat);
+  ceiling.rotation.x = +Math.PI / 2;
+  ceiling.position.set(MAP_W / 2, 1, MAP_H / 2);
+  scene.add(ceiling);
+
+  console.log("[fps][world3d] Phase 2 geometry built", {
+    walls: wallCount, map: MAP_W + "x" + MAP_H, textured: true,
   });
+
   world3d.wallsGroup = wallsGroup;
+  world3d.floor      = floor;
+  world3d.ceiling    = ceiling;
+  world3d.wallTex    = wallTex;
+  world3d.floorTex   = floorTex;
+  world3d.ceilTex    = ceilTex;
+}
+
+// Enemy mesh lifecycle + per-frame animation. Called each frame while
+// USE_3D_WORLD is on. Creates a Three.js Group per enemy on first sight
+// (via _createEnemyMesh), removes when the enemy exits enemies[] after
+// its death timeout. Walk cycle + hurt tint + death roll are procedural,
+// matching the humble teammate animation approach.
+function _syncEnemyMeshes(dt) {
+  if (!world3d.scene) return;
+  if (!world3d.enemyMeshes) world3d.enemyMeshes = new Map();
+  const meshes = world3d.enemyMeshes;
+  const live = new Set(enemies);
+  // Prune meshes for enemies no longer in the roster (removed after
+  // deadT window elapses in update()).
+  for (const [enemy, rec] of meshes) {
+    if (!live.has(enemy)) {
+      world3d.scene.remove(rec.group);
+      meshes.delete(enemy);
+    }
+  }
+  for (const e of enemies) {
+    let rec = meshes.get(e);
+    if (!rec) {
+      rec = _createEnemyMesh(e);
+      world3d.scene.add(rec.group);
+      meshes.set(e, rec);
+    }
+    // Position on the floor at ally-style +Z mapping used everywhere else
+    rec.group.position.set(e.x, 0, e.y);
+    // Face the player (AI has enemies chase the player, so pointing at
+    // them makes the 3D silhouette read correctly).
+    const dxE = player.x - e.x, dyE = player.y - e.y;
+    const faceDir = Math.atan2(dyE, dxE);
+    rec.group.rotation.y = Math.PI / 2 - faceDir;
+    // Visibility + death: fall forward and hide once the despawn window
+    // (~1.2 s) elapses.
+    if (e.dead) {
+      const t = Math.min(1, e.deadT / 0.4);
+      rec.group.rotation.x = t * (Math.PI / 2);
+      rec.group.visible = e.deadT < 1.2;
+    } else {
+      rec.group.rotation.x = 0;
+      rec.group.visible = true;
+    }
+    // Walk cycle — legs and arms swing in counter-phase. Speed roughly
+    // matched to enemy movement speed (grunts ~1 unit/s → 1.4 Hz cadence).
+    rec.walkT += dt * 9;
+    const sw = Math.sin(rec.walkT);
+    const legAmp = e.dead ? 0 : 0.50;
+    const armAmp = e.dead ? 0 : 0.25;
+    rec.legL.rotation.x = +sw * legAmp;
+    rec.legR.rotation.x = -sw * legAmp;
+    rec.armL.rotation.x = -sw * armAmp;
+    rec.armR.rotation.x = +sw * armAmp;
+    // Hurt tint — chestMat's emissive briefly glows red on damage.
+    const hurt = e.hurt > 0 ? Math.min(1, e.hurt / 0.18) : 0;
+    if (rec.chestMat && rec.chestMat.emissive) {
+      rec.chestMat.emissive.setRGB(hurt * 0.8, 0, 0);
+    }
+  }
 }
 
 // Rebuild the 3D world when the player picks a different map at retry.
@@ -2546,7 +2820,11 @@ function initWorld3d() {
     const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     renderer.setSize(canvas.width, canvas.height, false);
-    renderer.setClearColor(0x000000, 0);              // transparent — 2D floor gradient + enemies show through
+    // Phase 2: 3D world (walls+floor+ceiling+enemies+teammate) fills the
+    // whole scene now, so make the world3d canvas fully opaque. Fallback
+    // (USE_3D_WORLD=false) keeps the pre-Phase-1 transparent behaviour
+    // so the raycaster's #game canvas shows through.
+    renderer.setClearColor(USE_3D_WORLD ? 0x101015 : 0x000000, USE_3D_WORLD ? 1 : 0);
     // Three.js r155 renamed outputEncoding -> outputColorSpace and made
     // SRGBColorSpace the default for the output pipeline. r128 GLTFLoader
     // still writes the old `texture.encoding = sRGBEncoding` (which is
@@ -2892,6 +3170,7 @@ function renderWorld3d(dt) {
 
   // ----- per-entity updates (batch 1: just the teammate) -----
   updateTeammate(dt);
+  if (USE_3D_WORLD) _syncEnemyMeshes(dt);           // Phase 2: enemies as 3D humanoids
 
   world3d.renderer.render(world3d.scene, cam);
 }
