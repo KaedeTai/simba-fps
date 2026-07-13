@@ -1007,12 +1007,13 @@ function update(dt) {
   if (mouseDown && weapon.auto) tryShoot();
 
   // Movement — combine keyboard and touch joystick into forward/strafe scalars.
-  // Speed penalties (tactical FPS convention, post-normalization):
-  //   * backward (fwd < 0):        0.5x — 'S' / 'S+A' / 'S+D'
-  //   * pure strafe (fwd === 0, strafe !== 0): 0.7x — 'A' / 'D' alone
-  //   * forward-dominant (fwd > 0): 1.0x — 'W' / 'W+A' / 'W+D' stay full
-  // Backward takes priority over strafe when both apply (S+A is 0.5x, not 0.7x).
-  // Sprint (Shift) only boosts forward-dominant movement.
+  // Complete case-based speed matrix (user-specified, tactical FPS feel):
+  //   pure W           1.0x  sprint OK   ← only case where Shift boosts
+  //   W + A / W + D    1.0x  sprint NO   ← diagonal-forward doesn't sprint
+  //   pure S           0.5x  sprint NO
+  //   S + A / S + D    0.7x  sprint NO   ← strafe wins over backward
+  //   pure A / D       0.7x  sprint NO
+  //   (no input)       -                 ← gated by `if (mlen > 0)`
   const BACKWARD_MULT = 0.5;
   const STRAFE_MULT   = 0.7;
   const sprinting = keys["ShiftLeft"] || keys["ShiftRight"] || touchSprint;
@@ -1023,18 +1024,23 @@ function update(dt) {
   if (keys["KeyD"]) strafe += 1;
   if (keys["KeyA"]) strafe -= 1;
   if (stick.id !== null) { fwd += -stick.dy; strafe += stick.dx; }   // joystick: up = forward
-  // Sprint gate: only when net forward input is positive.
-  const spd = ((sprinting && fwd > 0) ? player.sprint : player.speed) * dt;
+  // Case-based mult + sprint gate. Handles joystick float values, not just
+  // ±1 (isFwd = fwd > 0, isBack = fwd < 0, isStrafe = strafe !== 0).
+  const isFwd    = fwd > 0;
+  const isBack   = fwd < 0;
+  const isStrafe = strafe !== 0;
+  let mult = 0, allowSprint = false;                              // no-input default
+  if      (isFwd  && !isStrafe) { mult = 1.0;           allowSprint = true;  }  // pure W
+  else if (isFwd  &&  isStrafe) { mult = 1.0;           allowSprint = false; }  // W+A / W+D
+  else if (isBack && !isStrafe) { mult = BACKWARD_MULT; allowSprint = false; }  // pure S
+  else if (isBack &&  isStrafe) { mult = STRAFE_MULT;   allowSprint = false; }  // S+A / S+D (strafe wins)
+  else if (             isStrafe) { mult = STRAFE_MULT; allowSprint = false; }  // pure A / D
+  const spd = ((sprinting && allowSprint) ? player.sprint : player.speed) * dt;
   let mvx = cos * fwd - sin * strafe;
   let mvy = sin * fwd + cos * strafe;
   const mlen = Math.hypot(mvx, mvy);
   if (mlen > 0) {
-    mvx = mvx / mlen * spd; mvy = mvy / mlen * spd;
-    // Directional speed mult — priority: backward > pure-strafe > forward.
-    let mult = 1.0;
-    if (fwd < 0)                          mult = BACKWARD_MULT;
-    else if (fwd === 0 && strafe !== 0)   mult = STRAFE_MULT;
-    if (mult !== 1.0) { mvx *= mult; mvy *= mult; }
+    mvx = mvx / mlen * spd * mult; mvy = mvy / mlen * spd * mult;
     const buf = 0.18;
     if (!isWall(player.x + mvx + Math.sign(mvx) * buf, player.y)) player.x += mvx;
     if (!isWall(player.x, player.y + mvy + Math.sign(mvy) * buf)) player.y += mvy;
