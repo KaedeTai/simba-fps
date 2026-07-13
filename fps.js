@@ -2336,6 +2336,80 @@ async function createTeammateFromMixamo() {
   });
   console.log("[fps][world3d] mixamo materials DIAGNOSTIC", mixamoMatDebug);
 
+  // ---- Attach a procedural rifle to the RightHand bone -------------------
+  // Vanguard's Firing Rifle clip is a proper aim-down-sights pose but the
+  // model has no weapon geometry — teammate was gesturing empty-handed.
+  // Build a small rifle Group, find the RightHand bone by name, add the
+  // rifle as its child with a tuned local offset so it sits in the palm.
+  //
+  // Mixamo bone naming varies (mixamorigRightHand, mixamorig:RightHand,
+  // RightHand). Match any of those. If none found, log a warning and skip.
+  const _buildAllyRifle = () => {
+    const rg = new THREE.Group();
+    const bodyMat  = new THREE.MeshStandardMaterial({ color: 0x22252a, roughness: 0.55, metalness: 0.55 });
+    const stockMat = new THREE.MeshStandardMaterial({ color: 0x4a3a2a, roughness: 0.85, metalness: 0.05 });
+    const collar   = new THREE.MeshStandardMaterial({ color: 0x1a1c1f, roughness: 0.55, metalness: 0.60 });
+    // Barrel — cylinder pointing along +Z (mesh-local forward)
+    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.36, 12), bodyMat);
+    barrel.rotation.x = Math.PI / 2;
+    barrel.position.z = 0.18;
+    rg.add(barrel);
+    // Muzzle collar
+    const muzzle = new THREE.Mesh(new THREE.CylinderGeometry(0.020, 0.020, 0.028, 12), collar);
+    muzzle.rotation.x = Math.PI / 2;
+    muzzle.position.z = 0.35;
+    rg.add(muzzle);
+    // Receiver
+    const receiver = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.058, 0.18), bodyMat);
+    receiver.position.set(0, -0.008, 0.02);
+    rg.add(receiver);
+    // Wooden stock
+    const stock = new THREE.Mesh(new THREE.BoxGeometry(0.048, 0.045, 0.13), stockMat);
+    stock.position.set(0, -0.008, -0.12);
+    rg.add(stock);
+    // Magazine (drops down from receiver)
+    const mag = new THREE.Mesh(new THREE.BoxGeometry(0.036, 0.10, 0.048), bodyMat);
+    mag.position.set(0, -0.070, 0.02);
+    rg.add(mag);
+    // Trigger guard (partial torus)
+    const guard = new THREE.Mesh(
+      new THREE.TorusGeometry(0.024, 0.006, 8, 20, Math.PI * 1.2), collar);
+    guard.rotation.y = Math.PI / 2; guard.rotation.z = -Math.PI * 0.42;
+    guard.position.set(0, -0.020, 0.03);
+    rg.add(guard);
+    return rg;
+  };
+
+  let rightHand = null;
+  const allBones = [];
+  model.traverse(o => {
+    if (o.isBone || o.type === "Bone") allBones.push(o.name);
+    if (rightHand) return;
+    if (/RightHand$/i.test(o.name) || /right[_:-]?hand$/i.test(o.name)) {
+      rightHand = o;
+    }
+  });
+  if (rightHand) {
+    const rifle = _buildAllyRifle();
+    // Mixamo hand local axes (typical): fingers extend along +X, palm faces
+    // -Y (down toward wrist), thumb toward +Z. Rifle's forward is +Z. To
+    // point the barrel along the fingers (out of the palm), rotate the
+    // rifle -π/2 around Y so its local +Z aligns with the hand's +X.
+    // Position it slightly forward of the palm and rotate the grip to
+    // sit in the hand.
+    // Scale accounts for the outer group.scale (~0.0031) — bones are in
+    // model-local coords which are also affected by the outer scale.
+    // Building the rifle in model-scale means the outer scale shrinks it
+    // properly; sizes above are in model-scale (~1.7 m tall), so the
+    // rifle geometry is in "world-ish" size.
+    rifle.rotation.set(0, -Math.PI / 2, 0);
+    rifle.position.set(6, -3, 4);              // model-local units before outer scale
+    rightHand.add(rifle);
+    console.log("[fps][world3d] rifle attached to", rightHand.name);
+  } else {
+    console.warn("[fps][world3d] no RightHand bone found on Vanguard — rifle NOT attached. Available bones (first 20):", allBones.slice(0, 20));
+  }
+
   console.log("[fps][world3d] mixamo load OK", {
     scale: scale.toFixed(4),
     raw_height: rawHeight.toFixed(2),
