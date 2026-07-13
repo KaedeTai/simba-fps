@@ -207,6 +207,15 @@ resize();
 
 // ---------- Player / weapon / world state ----------
 const player = { x: 3.5, y: 3.5, dir: 0, pitch: 0, hp: 100, maxHp: 100, speed: 3.2, sprint: 5.2, bob: 0 };
+// Jump physics (added later, kept out of the player object so the save
+// schema doesn't gain new fields — jump is transient and resets on
+// spawn / revive anyway). Space to jump when grounded (playerZ === 0
+// && !jumping); gravity brings you back down; no double-jump.
+let playerZ = 0;                // vertical offset in world units above eye height
+let playerVelZ = 0;             // vertical velocity, units/sec
+let jumping = false;
+const JUMP_V = 3.5;             // initial jump velocity — peak height ~0.6 units
+const GRAVITY = 9.8;            // "airtime" ~700 ms total cycle
 
 // AI teammate — follows the player and shoots the nearest visible enemy
 const ally = {
@@ -561,6 +570,16 @@ addEventListener("keydown", e => {
   // interact" convention many FPS games use.
   if (e.code === "KeyF" && running && !paused && !gameOver && !shopOpen) {
     aiming3d = true;
+    return;
+  }
+  // Space to jump — grounded-only, no double-jump. preventDefault stops
+  // the default browser scroll on Space.
+  if (e.code === "Space" && running && !paused && !gameOver && !shopOpen) {
+    if (!jumping && playerZ <= 0) {
+      playerVelZ = JUMP_V;
+      jumping = true;
+    }
+    e.preventDefault();
     return;
   }
   const dm = e.code.match(/^Digit([1-9])$/);
@@ -1119,6 +1138,18 @@ function reviveAlly() {
 
 // ---------- Update ----------
 function update(dt) {
+  // Jump physics — integrate vertical velocity + gravity, clamp to ground.
+  // Air control (WASD movement in-flight) is a natural consequence of the
+  // movement block below not gating on `jumping`.
+  if (jumping || playerZ > 0) {
+    playerVelZ -= GRAVITY * dt;
+    playerZ += playerVelZ * dt;
+    if (playerZ <= 0) {
+      playerZ = 0;
+      playerVelZ = 0;
+      jumping = false;
+    }
+  }
   // === persistence: enemy-AI grace period after auto-resume ===
   // For ~1.2s after a page-refresh restore, enemies stop moving/attacking
   // so the player isn't ambushed the instant they unpause.
@@ -2903,25 +2934,18 @@ function _buildWorld3dGeometry(scene) {
   floor.position.set(MAP_W / 2, 0, MAP_H / 2);
   scene.add(floor);
 
-  // Ceiling plane — darker tiled panel, faint pin-lights.
-  const ceilTex = _buildCeilingTexture();
-  ceilTex.repeat.set(MAP_W, MAP_H);
-  const ceilMat = new THREE.MeshStandardMaterial({ map: ceilTex, roughness: 0.95 });
-  const ceiling = new THREE.Mesh(floorGeo.clone(), ceilMat);
-  ceiling.rotation.x = +Math.PI / 2;
-  ceiling.position.set(MAP_W / 2, 1, MAP_H / 2);
-  scene.add(ceiling);
+  // Ceiling REMOVED — was blocking the boss (~1.32 units tall) at the
+  // Y=1 wall top. Open-sky arena feel matches the outdoor floor tile.
+  // TODO: skybox / gradient background when we want atmosphere back.
 
   console.log("[fps][world3d] Phase 2 geometry built", {
-    walls: wallCount, map: MAP_W + "x" + MAP_H, textured: true,
+    walls: wallCount, map: MAP_W + "x" + MAP_H, textured: true, ceiling: false,
   });
 
   world3d.wallsGroup = wallsGroup;
   world3d.floor      = floor;
-  world3d.ceiling    = ceiling;
   world3d.wallTex    = wallTex;
   world3d.floorTex   = floorTex;
-  world3d.ceilTex    = ceilTex;
 }
 
 // Enemy mesh lifecycle + per-frame animation. Called each frame while
@@ -3352,14 +3376,16 @@ function renderWorld3d(dt) {
   // LEFT of the screen. With the previous -Z mapping they disagreed and
   // the teammate slid relative to the walls when the player only rotated.
   const cam = world3d.camera;
-  cam.position.set(player.x, world3d.eyeH, player.y);
+  // Jump lifts the eye by playerZ (0 when grounded).
+  const eyeY = world3d.eyeH + playerZ;
+  cam.position.set(player.x, eyeY, player.y);
   // Convert player.pitch (px offset of the horizon) to an equivalent camera
   // pitch in radians. The raycaster clamps pitch to ±H*0.6; using a
   // proportional map to the vertical FOV keeps horizon lines aligned.
   const vFovRad = cam.fov * Math.PI / 180;
   const pitchRad = (player.pitch / H) * vFovRad;
   const targetX = player.x + Math.cos(player.dir) * Math.cos(pitchRad);
-  const targetY = world3d.eyeH + Math.sin(pitchRad);
+  const targetY = eyeY + Math.sin(pitchRad);
   const targetZ = player.y + Math.sin(player.dir) * Math.cos(pitchRad);
   cam.lookAt(targetX, targetY, targetZ);
 
