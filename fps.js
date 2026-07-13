@@ -2077,11 +2077,23 @@ const world3d = {
 
 // -------- teammate mesh factory --------
 // Human-shaped stack of primitives. ~18 meshes. Torso at Y=0.6, head at 1.02;
-// legs pivot at hip (Y=0.32), arms pivot at shoulder (Y=0.86). Arms and legs
-// live in their own sub-Groups so we can rotate them around the pivot for a
-// simple walk cycle.
+// legs pivot at hip (Y=0.32), arms pivot at shoulder (Y=0.86).
+//
+// Hierarchy (v2: torso split for walk-bob):
+//   g                    ← main group, positioned at ally world coord
+//   ├─ torsoGroup        ← upper body: torso/head/arms/rifle. Bobs on Y for walk cycle
+//   │   ├─ torso, chest plate, ID patch, shoulder pauldrons
+//   │   ├─ head + helmet + visor
+//   │   ├─ armL, armR    (pivot at shoulder — rotate.x for arm swing)
+//   │   ├─ rifleGroup + parts
+//   │   └─ muzzleFlash
+//   └─ legL, legR        ← lower body: pivot at hip, rotate.x for leg swing.
+//                          NOT children of torsoGroup — feet stay planted while
+//                          upper body bobs.
 function createTeammateMesh() {
   const g = new THREE.Group();
+  const torsoGroup = new THREE.Group();               // upper-body — bobs during walk
+  g.add(torsoGroup);
 
   // Materials
   const vest  = new THREE.MeshStandardMaterial({ color: 0x3a4a35, roughness: 0.70, metalness: 0.10 });
@@ -2094,33 +2106,32 @@ function createTeammateMesh() {
   const boot  = new THREE.MeshStandardMaterial({ color: 0x2a1a10, roughness: 0.90, metalness: 0.05 });
   const patch = new THREE.MeshStandardMaterial({ color: 0x4aaa4a, roughness: 0.60, emissive: 0x1a4a1a });
 
-  // ---- Torso (at chest height) ----
+  // ---- Torso (at chest height) — all children of torsoGroup ----
   const torso = new THREE.Mesh(new THREE.BoxGeometry(0.40, 0.60, 0.25), vest);
-  torso.position.set(0, 0.62, 0); g.add(torso);
+  torso.position.set(0, 0.62, 0); torsoGroup.add(torso);
   const chestPlate = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.34, 0.04), plate);
-  chestPlate.position.set(0, 0.66, 0.13); g.add(chestPlate);
+  chestPlate.position.set(0, 0.66, 0.13); torsoGroup.add(chestPlate);
   // Friendly-ID patch (green) — makes it obvious this is your teammate at a glance
   const idPatch = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.06, 0.02), patch);
-  idPatch.position.set(-0.11, 0.76, 0.15); g.add(idPatch);
+  idPatch.position.set(-0.11, 0.76, 0.15); torsoGroup.add(idPatch);
   // Shoulder pauldrons
   const shoulderL = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.09, 0.19), plate);
-  shoulderL.position.set(-0.24, 0.86, 0); g.add(shoulderL);
+  shoulderL.position.set(-0.24, 0.86, 0); torsoGroup.add(shoulderL);
   const shoulderR = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.09, 0.19), plate);
-  shoulderR.position.set(+0.24, 0.86, 0); g.add(shoulderR);
+  shoulderR.position.set(+0.24, 0.86, 0); torsoGroup.add(shoulderR);
 
   // ---- Head ----
   const head = new THREE.Mesh(new THREE.SphereGeometry(0.09, 12, 10), skin);
-  head.position.set(0, 1.02, 0); g.add(head);
-  // Helmet dome (top-half sphere squashed)
+  head.position.set(0, 1.02, 0); torsoGroup.add(head);
   const helmet = new THREE.Mesh(
     new THREE.SphereGeometry(0.10, 14, 10, 0, Math.PI * 2, 0, Math.PI / 2), helm);
   helmet.position.set(0, 1.05, 0);
-  helmet.scale.set(1.0, 0.85, 1.0); g.add(helmet);
-  // Visor strip
+  helmet.scale.set(1.0, 0.85, 1.0); torsoGroup.add(helmet);
   const visorStrip = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.030, 0.020), visor);
-  visorStrip.position.set(0, 1.03, 0.075); g.add(visorStrip);
+  visorStrip.position.set(0, 1.03, 0.075); torsoGroup.add(visorStrip);
 
   // ---- Arms (each in its own pivot Group at the shoulder for walk sway) ----
+  // Arms live inside torsoGroup so their shoulder pivots move with the bob.
   function makeArm(side) {
     const arm = new THREE.Group();
     arm.position.set(side * 0.24, 0.86, 0);            // shoulder pivot
@@ -2134,10 +2145,10 @@ function createTeammateMesh() {
     hand.position.set(0, -0.47, 0.10); arm.add(hand);
     return arm;
   }
-  const armL = makeArm(-1); g.add(armL);
-  const armR = makeArm(+1); g.add(armR);
+  const armL = makeArm(-1); torsoGroup.add(armL);
+  const armR = makeArm(+1); torsoGroup.add(armR);
 
-  // ---- Legs (pivot at hip) ----
+  // ---- Legs (pivot at hip) — kept on g, NOT torsoGroup, so feet stay planted ----
   function makeLeg(side) {
     const leg = new THREE.Group();
     leg.position.set(side * 0.09, 0.32, 0);
@@ -2154,8 +2165,7 @@ function createTeammateMesh() {
   const legL = makeLeg(-1); g.add(legL);
   const legR = makeLeg(+1); g.add(legR);
 
-  // ---- Rifle held at chest (shrunk-down variant of the pistol rifle mesh
-  //      idea — but light enough to inline; keeps this file self-contained) ----
+  // ---- Rifle held at chest — attach to torsoGroup so it bobs with upper body ----
   const rifleGroup = new THREE.Group();
   rifleGroup.position.set(0.06, 0.72, 0.18);
   rifleGroup.rotation.y = -0.15;      // barrel angles slightly outward
@@ -2169,9 +2179,9 @@ function createTeammateMesh() {
   rStock.position.set(0, -0.008, -0.16); rifleGroup.add(rStock);
   const rMag    = new THREE.Mesh(new THREE.BoxGeometry(0.024, 0.060, 0.030), rDark);
   rMag.position.set(0, -0.052, -0.04); rifleGroup.add(rMag);
-  g.add(rifleGroup);
+  torsoGroup.add(rifleGroup);
 
-  // ---- Muzzle flash quad (fires when ally.muzzle > 0) ----
+  // ---- Muzzle flash quad (fires when ally.muzzle > 0) — also on torsoGroup ----
   const flashMat = new THREE.MeshBasicMaterial({
     color: 0xffe0a0, transparent: true, opacity: 0,
     blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
@@ -2179,7 +2189,7 @@ function createTeammateMesh() {
   const muzzleFlash = new THREE.Mesh(new THREE.PlaneGeometry(0.14, 0.14), flashMat);
   muzzleFlash.position.copy(rifleGroup.position);
   muzzleFlash.position.z += 0.28;                    // in front of barrel tip
-  g.add(muzzleFlash);
+  torsoGroup.add(muzzleFlash);
 
   // ---- height scale (v3: calibrated to player eye level) --------------
   // Player camera eye sits at world3d.eyeH = 0.5 (mid-wall in the raycaster).
@@ -2199,6 +2209,7 @@ function createTeammateMesh() {
   g.scale.setScalar(TEAMMATE_SCALE);
   return {
     group: g,
+    torsoGroup,                                      // upper body — bobs during walk cycle
     armL, armR, legL, legR,
     chestMat: plate,                                 // for hurt-tint emissive
     muzzleFlash,
@@ -2343,23 +2354,44 @@ function updateTeammate(dt) {
 
   // ----- walk cycle -----
   // Legs and arms swing in counter-phase, driven by a phase accumulator
-  // that speeds up while moving and decays to zero at idle.
+  // that speeds up while moving and decays to zero at idle. Amplitudes
+  // increased from v3 (0.45 / 0.20) — the smaller values were technically
+  // correct but too subtle at typical viewing distance.
+  const WALK_LEG_SWING = 0.65;                      // ~37° hip rotation
+  const WALK_ARM_SWING = 0.35;                      // ~20° shoulder rotation
+  const WALK_BOB_AMP   = 0.06;                      // mesh-local; ~3cm world after scale
+  const WALK_BOB_FREQ  = 2.0;                       // 2x step frequency (once per foot plant)
   if (walking) {
     e.walkT += dt * 9;                              // ~1.4 Hz cadence at typical ally.speed
   } else {
     e.walkT *= Math.max(0, 1 - dt * 6);             // decay so it doesn't freeze mid-swing
   }
-  const legAmp = walking ? 0.45 : 0.0;
-  const armAmp = walking ? 0.20 : 0.0;
+  const legAmp = walking ? WALK_LEG_SWING : 0.0;
+  const armAmp = walking ? WALK_ARM_SWING : 0.0;
   const sw = Math.sin(e.walkT);
   e.legL.rotation.x = +sw * legAmp;
   e.legR.rotation.x = -sw * legAmp;
   e.armL.rotation.x = -sw * armAmp;                 // opposite side to matching leg
   e.armR.rotation.x = +sw * armAmp;
 
-  // ----- idle breathing (small vertical bob) -----
-  const breath = Math.sin(world3d.t * 1.5) * (walking ? 0.002 : 0.006);
-  e.group.position.set(ally.x, breath, ally.y);      // +Z mapping (v2)
+  // ----- upper-body walk bob -----
+  // Torso/head/arms/rifle drop when a foot plants (mid-stance) and rise
+  // when legs cross. Mesh-local units get scaled by TEAMMATE_SCALE (~0.49),
+  // so 0.06 local → 0.03 world (~3 cm). Bob is applied to torsoGroup, NOT
+  // the whole model, so legs stay planted while upper body oscillates.
+  //
+  //   -amp * (1 - cos(walkT*2)) / 2   maps to [-amp, 0]
+  //   walkT = 0        (legs crossed)   -> bob = 0        (high)
+  //   walkT = π/2      (mid-stance)     -> bob = -amp     (LOW)
+  //   walkT = π        (legs crossed)   -> bob = 0        (high)
+  //   walkT = 3π/2     (mid-stance)     -> bob = -amp     (LOW)
+  const walkBobPhase = (1 - Math.cos(e.walkT * WALK_BOB_FREQ)) / 2;   // [0, 1]
+  const walkBob = walking ? -WALK_BOB_AMP * walkBobPhase : 0;
+  const idleBreath = walking ? 0 : Math.sin(world3d.t * 1.5) * 0.010;
+  e.torsoGroup.position.y = walkBob + idleBreath;
+
+  // ----- position (world) — group.position.y stays 0; bob is on torsoGroup ----
+  e.group.position.set(ally.x, 0, ally.y);          // +Z mapping (v2)
 
   // ----- muzzle flash pulse -----
   // ally.muzzle is set by updateAlly() when it fires; peak 0.12s, decays.
