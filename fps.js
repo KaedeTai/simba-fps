@@ -2599,9 +2599,28 @@ function updateTeammate(dt) {
     }
     return;
   }
-  const blocked = wallBetween(player.x, player.y, ally.x, ally.y);
-  e.group.visible = !blocked;
-  if (blocked) return;
+  // Multi-sample occlusion — a single ray to the ally's center fails
+  // to hide the teammate when their body clips the corner of a wall.
+  // Cast rays to 5 sample points (center + 4 body-radius offsets) and
+  // show the mesh if ANY has clear LOS. This dramatically improves the
+  // "teammate visible through a wall corner" case without full z-buffer
+  // integration. Not perfect — the raycaster grid is unit cells so
+  // sub-cell partial occlusion still looks wrong — but a good enough
+  // patch until we decide on a proper 3D world rewrite.
+  const R = 0.22;                                     // body sample offset in world units
+  const samples = [
+    [ally.x,      ally.y      ],                     // center
+    [ally.x + R,  ally.y      ],                     // +X
+    [ally.x - R,  ally.y      ],                     // -X
+    [ally.x,      ally.y + R  ],                     // +Y
+    [ally.x,      ally.y - R  ],                     // -Y
+  ];
+  let anyVisible = false;
+  for (const [sx, sy] of samples) {
+    if (!wallBetween(player.x, player.y, sx, sy)) { anyVisible = true; break; }
+  }
+  e.group.visible = anyVisible;
+  if (!anyVisible) return;
 
   // ----- rotation.x / z always cleared (in case ally revived from death) ----
   e.group.rotation.x = 0;
@@ -2685,35 +2704,17 @@ function updateTeammate(dt) {
   } else if (walking) {
     e.idleSince = 0;
     if (e.isMixamo) {
-      // Track velocity direction with a lerp. Rate dt*15 turns ~π in
-      // ~100 ms — bumped from dt*8 because the previous rate was too
-      // slow to visibly catch up during quick backpedal-and-chase
-      // sequences (user saw the body "return to the start direction"
-      // because the lerp couldn't outpace the player's course changes).
-      const moveDir = Math.atan2(dy, dx);
-      const desiredRotY = Math.PI / 2 - moveDir;
-      const prevRotY = e.group.rotation.y;
-      e.group.rotation.y = _lerpAngle(prevRotY, desiredRotY, dt * 15);
-      // DIAGNOSTIC — rate-limited so the console isn't flooded. Prints
-      // once every ~30 frames (~0.5 s at 60 fps) while walking. Watching
-      // for:
-      //   * if THIS never prints while ally is chasing you, the walking
-      //     hysteresis is still stuck at false → look at the anim-state
-      //     log for Walking transitions
-      //   * if newRotY is stuck at prevRotY, lerp rate is too slow or
-      //     desired already matches
-      //   * if moveDir is stuck at a static value across many prints, AI
-      //     isn't actually moving frame-to-frame
-      e.dbgTick = (e.dbgTick || 0) + 1;
-      if (e.dbgTick % 30 === 0) {
-        console.log("[fps][ally] mixamo walk rot", {
-          moveDir:     moveDir.toFixed(2),
-          desiredRotY: desiredRotY.toFixed(2),
-          prevRotY:    prevRotY.toFixed(2),
-          newRotY:     e.group.rotation.y.toFixed(2),
-          dx: dx.toFixed(3), dy: dy.toFixed(3),
-          walking, isMixamo: e.isMixamo,
-        });
+      // User's simplified spec: while walking, face velocity direction
+      // immediately (no lerp). When stopped, preserve rotation.
+      //
+      // Zero-velocity guard is important: hysteresis holds `walking = true`
+      // for frames where the AI momentarily stops (target re-check),
+      // during which dx=dy=0 and atan2(0,0)=0 would compute a spurious
+      // desiredRotY=π/2. Skip the write on those frames — rotation
+      // preserves naturally, no drift toward the +X axis.
+      if (dx !== 0 || dy !== 0) {
+        const moveDir = Math.atan2(dy, dx);
+        e.group.rotation.y = Math.PI / 2 - moveDir;
       }
     } else {
       // Procedural: freeze whatever rotation.y is at walk-start.
