@@ -2021,8 +2021,16 @@ function updateWeaponLayerVisibility() {
 //                                            fixed-ally / dir+=0.1 case.)
 //   height (up)       ->  Three.js Y
 //
-// Ally facing formula (re-derived for the +Z mapping): rotation.y =
-// -ally.dir - PI/2. Verified for all four cardinals.
+// Ally facing formula (re-derived for +Z mapping AND +Z mesh-forward):
+// rotation.y = PI/2 - ally.dir. The teammate mesh's front actually faces
+// LOCAL +Z (chest plate at Z=+0.13, visor at Z=+0.075, rifle barrel at
+// Z=+0.18) — NOT -Z (which is the default Three.js camera convention).
+// The v2 fix derivation assumed -Z was forward, so it produced a 180°
+// backwards facing where the teammate was always shown from behind.
+//
+// Correct derivation: R_y(θ)(0,0,1) = (sin θ, 0, cos θ); set equal to
+// world-facing dir (cos ally.dir, 0, sin ally.dir); solve θ = PI/2 - dir.
+// Verified all four cardinals produce the right rifle-pointing direction.
 //
 // Occlusion: we call the existing wallBetween() helper to hide the teammate
 // when a wall is between them and the player — the raycaster's z-buffer
@@ -2152,15 +2160,22 @@ function createTeammateMesh() {
   muzzleFlash.position.z += 0.28;                    // in front of barrel tip
   g.add(muzzleFlash);
 
-  // ---- height scale ---------------------------------------------------
-  // First pass built the mesh at ~0.95 units head-height (feet-to-head).
-  // User feedback: too tall — should be ~0.66. Scale factor 0.66/0.95 ≈ 0.695.
-  // Uniform scale keeps proportions identical (head/helmet/patch all shrink
-  // together). group.position is not affected — the mesh centers on
-  // whatever (x, 0, y) the update loop writes. If feet start looking like
-  // they're sinking into the floor, we can bump group.position.y up by
-  // (feet_offset * scale) — hold off until we see the visual.
-  g.scale.setScalar(0.66 / 0.95);
+  // ---- height scale (v3: calibrated to player eye level) --------------
+  // Player camera eye sits at world3d.eyeH = 0.5 (mid-wall in the raycaster).
+  // Head sphere center is at local Y = 1.02. Solving 1.02 * scale = 0.5
+  // gives scale ≈ 0.49, which puts the teammate's face right at the
+  // player's eye level — no more "kid looking up at adult" feeling.
+  //
+  // v2 used 0.66/0.95 ≈ 0.695, which left the head at Y = 0.71 (0.21 above
+  // player eye). Uniform scale keeps every proportion identical.
+  //
+  // Feet after this scale: -0.2675 * 0.49 ≈ -0.13 (sinks 0.13 below the
+  // 2D floor). That's tolerable — the raycaster paints the floor as a
+  // 2D gradient with no depth buffer, so no z-fighting. If it becomes
+  // visually distracting we can lift group.position.y by ~0.13 at the
+  // cost of nudging the head 0.13 above eye level again.
+  const TEAMMATE_SCALE = 0.5 / 1.02;                // head center -> player eye
+  g.scale.setScalar(TEAMMATE_SCALE);
   return {
     group: g,
     armL, armR, legL, legR,
@@ -2226,7 +2241,7 @@ function updateTeammate(dt) {
     const t = Math.min(1, ally.deadT / 0.4);
     e.group.rotation.x = t * (Math.PI / 2);
     e.group.position.set(ally.x, 0, ally.y);          // +Z mapping (v2)
-    e.group.rotation.y = -ally.dir - Math.PI / 2;     // re-derived for +Z mapping
+    e.group.rotation.y = Math.PI / 2 - ally.dir;      // v3: mesh forward is +Z
     // Fade to invisible during the deadT window (~2s), then hide entirely.
     e.group.visible = ally.deadT < 2.0;
     return;
@@ -2244,7 +2259,7 @@ function updateTeammate(dt) {
   e.prevX = ally.x; e.prevY = ally.y;
 
   e.group.rotation.x = 0;                           // clear death rotation if revived
-  e.group.rotation.y = -ally.dir - Math.PI / 2;     // face where the AI is looking (v2 mapping)
+  e.group.rotation.y = Math.PI / 2 - ally.dir;      // v3: mesh forward is +Z, so PI/2 - dir
   e.group.rotation.z = 0;
 
   // ----- walk cycle -----
