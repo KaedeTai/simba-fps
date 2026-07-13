@@ -2107,25 +2107,35 @@ const MIXAMO_FILES = {
 };
 
 function _stripRootMotion(clip) {
-  // Remove Hips.position tracks so the character animates in place instead
-  // of drifting, AND remove Hips.quaternion / .rotation tracks so the clip
-  // doesn't fight our own rotation.y writes on the outer Group. Log
-  // analysis showed the Idle clip was pulling rotation back to bind-pose
-  // (~0 rad) between our lerp writes, which is why the teammate wouldn't
-  // face the player when backpedaling — the Mixamo rig kept snapping
-  // Hips back to identity every frame the Idle action was blending in.
+  // Strip any position / rotation / quaternion / scale track that targets
+  // a root-like bone so the clip animates the LIMBS in-place while our
+  // outer Group owns the world position + heading.
   //
-  // Side effect to watch for: pelvis sway during walk cycle (natural
-  // side-to-side hip rock) will disappear because that's on Hips too.
-  // If the walk starts to look mechanical, we could per-axis strip
-  // (keep pitch/roll, drop yaw) but that's messier since AnimationClip
-  // tracks are quaternion 4-vecs not Euler axes. Ship the simple version
-  // first; iterate only if user reports mechanical hips.
+  // Mixamo track naming varies: `mixamorigHips.quaternion`,
+  // `Armature.mixamorig:Hips.rotation`, occasionally `Hips.position` or
+  // `RootNode.quaternion`. Original regex only matched the last of these.
+  // Widen to catch any node whose *name segment* contains 'Hip'/'hip' or
+  // 'root'/'Root', with any position / quaternion / rotation / scale
+  // property. Also log what got stripped so we can verify from the
+  // console — a 'stripped 0' line means we still didn't catch the real
+  // track names and I need to see the raw list.
+  const before = clip.tracks.length;
+  const stripped = [];
+  const kept = [];
   clip.tracks = clip.tracks.filter(t => {
     const n = t.name || "";
-    if (/Hips\.position$/i.test(n))                 return false;
-    if (/Hips\.(quaternion|rotation)$/i.test(n))    return false;
+    const isRootBone = /(Hip|Hips|hip|hips|root|Root|RootNode|Armature)/.test(n);
+    const isTransformProp = /\.(position|quaternion|rotation|scale)$/i.test(n);
+    if (isRootBone && isTransformProp) { stripped.push(n); return false; }
+    kept.push(n);
     return true;
+  });
+  console.log(`[fps][world3d] stripRootMotion "${clip.name || "?"}": kept ${clip.tracks.length}/${before}, stripped ${stripped.length}`, {
+    stripped,
+    // Print ALL kept track names so we can see if any Hips-adjacent
+    // track we didn't recognise slipped through and is now writing
+    // rotation.y again.
+    keptSample: kept.slice(0, 3).concat(kept.length > 6 ? ["…"] : []).concat(kept.slice(-3)),
   });
   return clip;
 }
@@ -2675,13 +2685,15 @@ function updateTeammate(dt) {
   } else if (walking) {
     e.idleSince = 0;
     if (e.isMixamo) {
-      // Track velocity direction, lerp for smoothness. Rate dt*8 turns
-      // ~π in ~150 ms — quick enough to feel responsive, slow enough
-      // that a jitter step doesn't yank the body.
+      // Track velocity direction with a lerp. Rate dt*15 turns ~π in
+      // ~100 ms — bumped from dt*8 because the previous rate was too
+      // slow to visibly catch up during quick backpedal-and-chase
+      // sequences (user saw the body "return to the start direction"
+      // because the lerp couldn't outpace the player's course changes).
       const moveDir = Math.atan2(dy, dx);
       const desiredRotY = Math.PI / 2 - moveDir;
       const prevRotY = e.group.rotation.y;
-      e.group.rotation.y = _lerpAngle(prevRotY, desiredRotY, dt * 8);
+      e.group.rotation.y = _lerpAngle(prevRotY, desiredRotY, dt * 15);
       // DIAGNOSTIC — rate-limited so the console isn't flooded. Prints
       // once every ~30 frames (~0.5 s at 60 fps) while walking. Watching
       // for:
