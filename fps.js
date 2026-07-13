@@ -49,7 +49,7 @@ function _readRifleDbg() {
   // under the new Idle pose). URL query still overrides both so future
   // poses can be re-tuned without a code change.
   let rx = -0.5, ry = 0, rz = -0.5;
-  let tx = 0, ty = 0, tz = -0.1;
+  let tx = -0.04, ty = 0.05, tz = 0;    // baked from user's tuning session
   try {
     const u = new URLSearchParams(location.search);
     if (u.has("rifleRX")) rx = parseFloat(u.get("rifleRX"));
