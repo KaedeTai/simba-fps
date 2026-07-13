@@ -2183,6 +2183,7 @@ function createTeammateMesh() {
     muzzleFlash,
     walkT: 0,                                        // walk cycle phase
     prevX: 0, prevY: 0,                              // previous world pos for speed detection
+    wasDead: true,                                   // treats first frame as revive so facing snaps once
   };
 }
 
@@ -2244,23 +2245,51 @@ function updateTeammate(dt) {
     e.group.rotation.y = Math.PI / 2 - ally.dir;      // v3: mesh forward is +Z
     // Fade to invisible during the deadT window (~2s), then hide entirely.
     e.group.visible = ally.deadT < 2.0;
+    e.wasDead = true;                                 // v4: force facing-snap on next revive
     return;
   }
   const blocked = wallBetween(player.x, player.y, ally.x, ally.y);
   e.group.visible = !blocked;
   if (blocked) return;
 
-  // ----- position + facing -----
-  // Detect walking by the distance moved this frame — cheap and doesn't
-  // need to peek into the AI's decision logic.
+  // ----- rotation.x / z always cleared (in case ally revived from death) ----
+  e.group.rotation.x = 0;
+  e.group.rotation.z = 0;
+
+  // ----- just-revived (or first-ever) snap ---------------------------------
+  // On the transition dead -> alive the ally teleports to a spawn tile near
+  // the player. If we let the movement-detector see that as a frame's worth
+  // of "movement", the teammate would spin to face the teleport direction.
+  // Snap prev-pos to current and set facing from ally.dir once.
+  if (e.wasDead) {
+    e.prevX = ally.x; e.prevY = ally.y;
+    e.group.rotation.y = Math.PI / 2 - ally.dir;
+    e.wasDead = false;
+  }
+
+  // ----- position + walking detection --------------------------------------
   const dx = ally.x - e.prevX, dy = ally.y - e.prevY;
   const moved = Math.hypot(dx, dy);
   const walking = moved > 0.002;
   e.prevX = ally.x; e.prevY = ally.y;
 
-  e.group.rotation.x = 0;                           // clear death rotation if revived
-  e.group.rotation.y = Math.PI / 2 - ally.dir;      // v3: mesh forward is +Z, so PI/2 - dir
-  e.group.rotation.z = 0;
+  // ----- facing: only update when firing or walking; idle preserves last frame
+  // Root cause of the "always staring at player" bug: the AI writes
+  // ally.dir every frame to face the player when there's no target enemy
+  // (see updateAlly() — "aim at the target, else look toward the player").
+  // The render used to blindly apply ally.dir, so the teammate always
+  // snapped back to face the player between actions. Now the render owns
+  // the visual facing: it uses movement velocity when walking (tactical
+  // soldier faces where they're going) and ally.dir only during the muzzle-
+  // flash window (they're actively aiming). When neither, rotation.y is
+  // left untouched — teammate holds the direction they last had.
+  if (ally.muzzle > 0) {
+    e.group.rotation.y = Math.PI / 2 - ally.dir;
+  } else if (walking) {
+    const moveDir = Math.atan2(dy, dx);
+    e.group.rotation.y = Math.PI / 2 - moveDir;
+  }
+  // else: preserve last rotation.y (idle)
 
   // ----- walk cycle -----
   // Legs and arms swing in counter-phase, driven by a phase accumulator
