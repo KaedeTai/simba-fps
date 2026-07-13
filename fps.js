@@ -2182,6 +2182,14 @@ async function createTeammateFromMixamo() {
   // THREE.sRGBEncoding` field (undefined in r160), so we set the new
   // colorSpace field explicitly. Data maps (normal / roughness /
   // metalness / AO) legitimately stay in linear color space.
+  // DIAGNOSTIC PASS — user reports 'matte grey, no camo pattern' meaning
+  // the material clamp worked (no more shiny-black) but base-color textures
+  // still don't render. Log every material with enough detail to pinpoint
+  // which of these is happening:
+  //   (a) m.map is NULL          → r128 GLTFLoader didn't parse the texture
+  //                                 (mismatch with r160-generated GLB)
+  //   (b) m.map yes, m.map.image null → texture decode still in progress or failed
+  //   (c) map + image present but not visible → color/side/opacity blocking
   const mixamoMatDebug = [];
   model.traverse(o => {
     if (!o.isMesh) return;
@@ -2189,10 +2197,27 @@ async function createTeammateFromMixamo() {
     const mats = Array.isArray(o.material) ? o.material : [o.material];
     for (const m of mats) {
       if (!m) continue;
-      mixamoMatDebug.push({
-        name: m.name, metalness_before: m.metalness, roughness_before: m.roughness,
-        hasMap: !!m.map, hasNormal: !!m.normalMap,
-      });
+      const img = m.map && m.map.image;
+      const info = {
+        mesh: o.name,
+        matName: m.name,
+        matType: m.type,
+        map: m.map ? "yes" : "NULL",
+        mapImage: img ? `${img.width || "?"}x${img.height || "?"}` : "none",
+        mapImageSrcTail: img && img.src ? String(img.src).slice(-60) : "n/a",
+        mapColorSpace: m.map ? m.map.colorSpace : "n/a",
+        mapFormat: m.map ? m.map.format : "n/a",
+        mapEncoding: m.map ? m.map.encoding : "n/a",
+        normalMap: m.normalMap ? "yes" : "NULL",
+        color: m.color ? "#" + m.color.getHexString() : "n/a",
+        metalness_before: m.metalness,
+        roughness_before: m.roughness,
+        transparent: m.transparent,
+        opacity: m.opacity,
+        side: m.side,
+        vertexColors: m.vertexColors,
+      };
+      mixamoMatDebug.push(info);
       // Clamp reflectivity so it doesn't render mirror-black without an env map.
       if (m.metalness !== undefined && m.metalness > 0.15) m.metalness = 0.0;
       if (m.roughness !== undefined && m.roughness < 0.7)  m.roughness = 0.85;
@@ -2201,10 +2226,16 @@ async function createTeammateFromMixamo() {
         if (m.map)         m.map.colorSpace         = THREE.SRGBColorSpace;
         if (m.emissiveMap) m.emissiveMap.colorSpace = THREE.SRGBColorSpace;
       }
+      // Force base color to white so texture isn't tinted grey. Some
+      // fbx2gltf exports set m.color to a mid-grey which multiplies with
+      // texture output and washes the pattern out — this override is safe
+      // because the base-color TEXTURE carries the intended tinting.
+      if (m.map && m.color) m.color.setHex(0xffffff);
       m.needsUpdate = true;
+      if (m.map) m.map.needsUpdate = true;
     }
   });
-  console.log("[fps][world3d] mixamo materials patched", mixamoMatDebug);
+  console.log("[fps][world3d] mixamo materials DIAGNOSTIC", mixamoMatDebug);
 
   console.log("[fps][world3d] mixamo load OK", {
     scale: scale.toFixed(4),
