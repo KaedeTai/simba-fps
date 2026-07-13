@@ -2661,7 +2661,29 @@ function updateTeammate(dt) {
       // that a jitter step doesn't yank the body.
       const moveDir = Math.atan2(dy, dx);
       const desiredRotY = Math.PI / 2 - moveDir;
-      e.group.rotation.y = _lerpAngle(e.group.rotation.y, desiredRotY, dt * 8);
+      const prevRotY = e.group.rotation.y;
+      e.group.rotation.y = _lerpAngle(prevRotY, desiredRotY, dt * 8);
+      // DIAGNOSTIC — rate-limited so the console isn't flooded. Prints
+      // once every ~30 frames (~0.5 s at 60 fps) while walking. Watching
+      // for:
+      //   * if THIS never prints while ally is chasing you, the walking
+      //     hysteresis is still stuck at false → look at the anim-state
+      //     log for Walking transitions
+      //   * if newRotY is stuck at prevRotY, lerp rate is too slow or
+      //     desired already matches
+      //   * if moveDir is stuck at a static value across many prints, AI
+      //     isn't actually moving frame-to-frame
+      e.dbgTick = (e.dbgTick || 0) + 1;
+      if (e.dbgTick % 30 === 0) {
+        console.log("[fps][ally] mixamo walk rot", {
+          moveDir:     moveDir.toFixed(2),
+          desiredRotY: desiredRotY.toFixed(2),
+          prevRotY:    prevRotY.toFixed(2),
+          newRotY:     e.group.rotation.y.toFixed(2),
+          dx: dx.toFixed(3), dy: dy.toFixed(3),
+          walking, isMixamo: e.isMixamo,
+        });
+      }
     } else {
       // Procedural: freeze whatever rotation.y is at walk-start.
       if (!e.walkFacingLocked) {
