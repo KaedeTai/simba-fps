@@ -3,6 +3,46 @@
    SIMBA FPS — raycasting first-person shooter, single file, no dependencies
    ========================================================================= */
 
+// ---------- 3D world mode pref — HOISTED to fix TDZ ----------
+// Must be declared BEFORE any code (e.g. initProfileUI at line ~700) that
+// reads USE_3D_WORLD. Previously lived deep in the world3d module block
+// (~line 2178) which triggered:
+//   Uncaught ReferenceError: Cannot access 'USE_3D_WORLD' before initialization
+// on any page load that ran initProfileUI before the world3d block.
+//
+// Toggle sources (priority: URL > localStorage > default):
+//   ?mode=2d / ?mode=3d       URL query param (session, e.g. bug repro)
+//   localStorage 'simbafps:pref:world3d'   persistent user pref
+//   default = true (3D)
+//
+// User inputs three ways:
+//   Desktop: F2 keydown → toggle + reload
+//   Any:     start-screen checkbox "3D 世界" → saves pref, applies on Start
+//   Any:     pause-menu "切換 2.5D / 3D 模式" button → toggle + reload
+const WORLD3D_PREF_KEY = "simbafps:pref:world3d";
+function _readWorld3dPref() {
+  try {
+    const params = new URLSearchParams(location.search);
+    const modeParam = params.get("mode");
+    if (modeParam === "2d") return false;
+    if (modeParam === "3d") return true;
+    const stored = localStorage.getItem(WORLD3D_PREF_KEY);
+    if (stored === "false") return false;
+    if (stored === "true")  return true;
+  } catch (e) {}
+  return true;                                     // default: 3D
+}
+let USE_3D_WORLD = _readWorld3dPref();
+console.log("[fps][world3d] mode:", USE_3D_WORLD ? "3D" : "2.5D",
+  "(source: URL/localStorage/default)");
+
+function toggleWorld3dMode() {
+  const next = !USE_3D_WORLD;
+  try { localStorage.setItem(WORLD3D_PREF_KEY, String(next)); } catch (e) {}
+  console.log("[fps][world3d] toggling to", next ? "3D" : "2.5D", "— reloading");
+  location.reload();
+}
+
 // ---------- Level maps (1 = wall, 0 = floor) ----------
 const MAPS = [
   {
@@ -2165,43 +2205,9 @@ const ENABLE_3D_ENTITIES = true;
 //   Phase 5:              polish + retire the raycaster module.
 // HUD (weapon viewmodel, minimap, health bar, shop, save/load) is
 // untouched by any phase — pure DOM overlays. Save schema unchanged.
-//
-// Toggle sources (priority: URL > localStorage > default):
-//   ?mode=2d / ?mode=3d       URL query param (session, e.g. bug repro)
-//   localStorage 'simbafps:pref:world3d'   persistent user pref
-//   default = true (3D)
-//
-// User inputs three ways:
-//   Desktop: F2 keydown → toggle + reload
-//   Any:     start-screen checkbox "3D 世界" → saves pref, applies on Start
-//   Any:     pause-menu "切換 2.5D / 3D 模式" button → toggle + reload
-const WORLD3D_PREF_KEY = "simbafps:pref:world3d";
-function _readWorld3dPref() {
-  try {
-    const params = new URLSearchParams(location.search);
-    const modeParam = params.get("mode");
-    if (modeParam === "2d") return false;
-    if (modeParam === "3d") return true;
-    const stored = localStorage.getItem(WORLD3D_PREF_KEY);
-    if (stored === "false") return false;
-    if (stored === "true")  return true;
-  } catch (e) {}
-  return true;                                     // default: 3D
-}
-let USE_3D_WORLD = _readWorld3dPref();
-console.log("[fps][world3d] mode:", USE_3D_WORLD ? "3D" : "2.5D",
-  "(source: URL/localStorage/default)");
-
-// Toggle handler shared by keyboard (F2) and pause-menu button.
-// Persists the pref and reloads — beforeunload's saveRun preserves the
-// current run so the reload's tryAutoResume drops the player back into
-// the same session with the new mode active.
-function toggleWorld3dMode() {
-  const next = !USE_3D_WORLD;
-  try { localStorage.setItem(WORLD3D_PREF_KEY, String(next)); } catch (e) {}
-  console.log("[fps][world3d] toggling to", next ? "3D" : "2.5D", "— reloading");
-  location.reload();
-}
+// USE_3D_WORLD, WORLD3D_PREF_KEY, _readWorld3dPref, and toggleWorld3dMode
+// are declared at the TOP of this file so initProfileUI (which reads
+// USE_3D_WORLD to sync the start-screen checkbox) doesn't hit a TDZ.
 
 const world3d = {
   canvas: null, scene: null, camera: null, renderer: null,
