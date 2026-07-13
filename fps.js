@@ -2501,6 +2501,18 @@ function initWorld3d() {
   }
 }
 
+// Angle lerp with -π/π wrap. Used by the Mixamo walking branch to smoothly
+// rotate the body toward the movement direction — the clip animates the
+// legs stepping forward along the mesh's local +Z, so if we hard-snap the
+// body to velocity every frame it flickers, and if we don't track velocity
+// at all the legs march in one direction while the body faces another.
+function _lerpAngle(a, b, t) {
+  let d = b - a;
+  while (d >  Math.PI) d -= 2 * Math.PI;
+  while (d < -Math.PI) d += 2 * Math.PI;
+  return a + d * Math.min(1, Math.max(0, t));
+}
+
 // Cross-fade helper for the Mixamo state machine. No-op if the new state
 // is already current or the target clip didn't load. Enforces a minimum
 // dwell time on the current state so per-frame movement-jitter doesn't
@@ -2622,46 +2634,45 @@ function updateTeammate(dt) {
   e.wasWalking = walking;
   e.prevX = ally.x; e.prevY = ally.y;
 
-  // ----- facing: true lock-current-rotation semantics -----
-  // Previous approaches all snapped rotation to velocity or aim direction
-  // when walking started, which put the teammate FACING the player when
-  // the AI's walk was toward them. Even hysteresis on the state machine
-  // (above) wouldn't help because the ONE snap moment at walk-start already
-  // did the damage.
+  // ----- facing: Mixamo tracks velocity, procedural locks -----
+  // Split per mesh type because the two use fundamentally different walk
+  // animations:
   //
-  // New rule matches the user's spec verbatim ("他最後是什麼方向就應該
-  // 維持那個方向"): the moment we start walking, we lock IN PLACE — we
-  // freeze whatever rotation.y currently is and hold it for the whole
-  // walking session. No re-snap to velocity, no drift toward the target,
-  // period. Only firing (a real aim event) or a long idle (>1 s) unlocks.
+  //   Mixamo:      Walking clip is DIRECTIONAL — legs step along the mesh's
+  //                local forward. If body doesn't match velocity, feet march
+  //                one way while chest points another → visual break.
+  //                → Lerp rotation.y toward velocity direction each frame.
   //
-  //   Firing (muzzle > 0)   → snap to aim SNAPSHOT + unlock walking-lock
-  //   Walking, freshly entered → snapshot CURRENT rotation.y and lock it
-  //   Walking, ongoing      → hold locked rotation, never re-snap
-  //   Idle, <1s             → preserve (don't unlock so brief pauses
-  //                            during a walk don't reset the freeze)
-  //   Idle, >1s             → unlock; next walking will freeze fresh
+  //   Procedural:  Legs swing symmetrically around the hip pivot. Facing
+  //                left/right/backward while walking looks the same as
+  //                facing forward — the lock semantics work naturally.
+  //                → Freeze rotation.y at walk-start; hold for the session.
+  //
+  // Firing and idle behave the same for both — snap to aim / preserve.
   if (ally.muzzle > 0) {
     e.group.rotation.y = Math.PI / 2 - e.aimDir;
     e.walkFacingLocked = false;
     e.idleSince = 0;
   } else if (walking) {
     e.idleSince = 0;
-    if (!e.walkFacingLocked) {
-      // Freshly entered walking. Take a snapshot of whatever the current
-      // facing is — this is what the teammate was last aimed at / last
-      // walking toward / whatever the wasDead branch set them to.
-      e.walkFacingLockedRotY = e.group.rotation.y;
-      e.walkFacingLocked = true;
+    if (e.isMixamo) {
+      // Track velocity direction, lerp for smoothness. Rate dt*8 turns
+      // ~π in ~150 ms — quick enough to feel responsive, slow enough
+      // that a jitter step doesn't yank the body.
+      const moveDir = Math.atan2(dy, dx);
+      const desiredRotY = Math.PI / 2 - moveDir;
+      e.group.rotation.y = _lerpAngle(e.group.rotation.y, desiredRotY, dt * 8);
+    } else {
+      // Procedural: freeze whatever rotation.y is at walk-start.
+      if (!e.walkFacingLocked) {
+        e.walkFacingLockedRotY = e.group.rotation.y;
+        e.walkFacingLocked = true;
+      }
+      e.group.rotation.y = e.walkFacingLockedRotY;
     }
-    // Hold the frozen rotation for the entire walking session — no
-    // velocity-based updates. Teammate walks sideways/backwards toward
-    // wherever the AI directs, body stays fixed.
-    e.group.rotation.y = e.walkFacingLockedRotY;
   } else {
-    // Idle: preserve. Unlock only after 1 s of continuous idle so a
-    // brief in-walk stall (single frame of vAvg dip below exitT that
-    // still slips through hysteresis) doesn't clear the lock.
+    // Idle: preserve. For procedural, unlock after >1 s of continuous
+    // idle so the next walking session gets a fresh freeze reference.
     e.idleSince = (e.idleSince || 0) + dt;
     if (e.idleSince > 1.0) e.walkFacingLocked = false;
   }
