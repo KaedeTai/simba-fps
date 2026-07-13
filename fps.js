@@ -2947,6 +2947,7 @@ async function createTeammateFromMixamo() {
   };
 
   let rightHand = null;
+  let rifle = null;                            // hoisted so the returned entity can hold a ref for periodic orientation diagnostics
   const allBones = [];
   model.traverse(o => {
     if (o.isBone || o.type === "Bone") allBones.push(o.name);
@@ -2956,7 +2957,7 @@ async function createTeammateFromMixamo() {
     }
   });
   if (rightHand) {
-    const rifle = _buildAllyRifle();
+    rifle = _buildAllyRifle();
     // Measure the hand bone's actual world scale so we can counter-scale
     // the rifle. Previous naive numeric guesses (6, -3, 4) put the rifle
     // in the sky because the bone chain's cumulative world scale wasn't
@@ -2987,9 +2988,13 @@ async function createTeammateFromMixamo() {
     //   1. `(0, -π/2, 0)`         — muzzle pointed backwards.
     //   2. `(π, -π/2, 0)`         — still backwards (X π got consumed by yaw).
     //   3. `(0, -π/2, π)`         — still backwards.
-    //   4. `(0, +π/2, 0)`         — muzzle NOW forward but rifle upside-down.
-    // Add X-axis π on top of the correct yaw to flip top/bottom.
-    rifle.rotation.set(Math.PI, Math.PI / 2, 0);
+    //   4. `(0, +π/2, 0)`         — muzzle forward but rifle upside-down.
+    //   5. `(π, +π/2, 0)`         — top/bottom OK on old arms-down Idle.
+    //   6. NEW POSE (Shooter Pack): rifle-ready Idle rotates the hand bone
+    //      into an aim quaternion. The old X-π overcompensates the pitch
+    //      and points the muzzle at the sky. Halve the X flip to π/2 so
+    //      the muzzle levels out from vertical to horizontal.
+    rifle.rotation.set(Math.PI / 2, Math.PI / 2, 0);
     // Temporary diagnostic — an AxesHelper glued to the rifle so the user
     // can screenshot and confirm which world-axis the barrel actually
     // points along. Red = X, Green = Y, Blue = Z. Remove once orientation
@@ -3032,6 +3037,12 @@ async function createTeammateFromMixamo() {
     actions,
     current: "Idle",
     isMixamo: true,
+    // References for the periodic rifle-orientation diagnostic in
+    // updateTeammate — captured here so we don't have to walk the bone
+    // tree every frame. rifle is null if we couldn't find the hand bone.
+    rifle,
+    rightHand,
+    _diagCounter: 0,
     // Same tracking fields as procedural mesh so updateTeammate can share code.
     walkT: 0, prevX: 0, prevY: 0,
     wasDead: true, aimDir: 0, prevMuzzle: 0,
@@ -3610,6 +3621,28 @@ function updateTeammate(dt) {
   // Mixamo: always tick the animation mixer so poses interpolate between
   // frames. Skipped for procedural (has no mixer).
   if (e.isMixamo && e.mixer) e.mixer.update(dt);
+
+  // Periodic rifle-orientation diagnostic (once per ~1 s at 60 FPS). Prints
+  // the right-hand bone's world quaternion and the rifle's world forward
+  // vector so we can eyeball whether the muzzle is level (fwd ~= (X, ~0, Z))
+  // or angled at the sky (fwd.y > 0). Runs only while the entity has a
+  // real rifle attached and the game is running to avoid log noise.
+  if (e.isMixamo && e.rifle && e.rightHand && !gameOver && !paused) {
+    e._diagCounter = (e._diagCounter || 0) + 1;
+    if (e._diagCounter >= 60) {
+      e._diagCounter = 0;
+      const handQ = new THREE.Quaternion();
+      e.rightHand.updateMatrixWorld(true);
+      e.rightHand.getWorldQuaternion(handQ);
+      const rifleQ = new THREE.Quaternion();
+      e.rifle.updateMatrixWorld(true);
+      e.rifle.getWorldQuaternion(rifleQ);
+      const rifleFwd = new THREE.Vector3(0, 0, -1).applyQuaternion(rifleQ);
+      console.log("[fps][teammate] rifle-orient",
+        "hand q:", handQ.toArray().map(v => v.toFixed(2)),
+        "rifle world fwd:", rifleFwd.toArray().map(v => v.toFixed(2)));
+    }
+  }
   // Decay the state-hold timer used by _crossfadeTeammate to prevent
   // sub-frame flapping between Idle and Walking.
   if (e.stateHoldT > 0) e.stateHoldT -= dt;
