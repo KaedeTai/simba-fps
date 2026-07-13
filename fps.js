@@ -618,10 +618,19 @@ function _isScoped() {
   return typeof aiming3d !== "undefined" && aiming3d
       && typeof weapon !== "undefined" && weapon && weapon.id === "sniper";
 }
+// Laser rifle's holographic sight — lighter version of the sniper scope.
+// Zooms moderately (35° hFOV vs sniper's 20°), keeps the viewmodel visible
+// (holo is glued to the weapon, not hiding behind an eyecup), and only
+// slows aim slightly.
+function _isLaserScoped() {
+  return typeof aiming3d !== "undefined" && aiming3d
+      && typeof weapon !== "undefined" && weapon && weapon.id === "laser";
+}
 document.addEventListener("mousemove", e => {
   if (document.pointerLockElement === screen && !paused) {
     // Sniper scope drops sensitivity dramatically so fine aim is possible.
-    const sensMult = _isScoped() ? 0.35 : 1;
+    // Laser holo sight is a lighter version — 0.6× instead of 0.35×.
+    const sensMult = _isScoped() ? 0.35 : (_isLaserScoped() ? 0.6 : 1);
     player.dir += e.movementX * 0.0022 * sensMult;
     // vertical look: shift the horizon (moving mouse up looks up)
     player.pitch -= e.movementY * 1.3 * sensMult;
@@ -1195,7 +1204,9 @@ function update(dt) {
   else if (             isStrafe) { mult = STRAFE_MULT; allowSprint = false; }  // pure A / D
   // Sniper scope walk penalty — locks you to a slow crouch-crawl while
   // aiming so the reticle isn't yanked around at running speed.
-  const scopedFactor = _isScoped() ? 0.4 : 1;
+  // Sniper scope 0.4×, laser holo sight 0.7× (lighter penalty for the
+  // mid-zoom sci-fi sight), everything else 1×.
+  const scopedFactor = _isScoped() ? 0.4 : (_isLaserScoped() ? 0.7 : 1);
   const spd = ((sprinting && allowSprint) ? player.sprint : player.speed) * dt * scopedFactor;
   let mvx = cos * fwd - sin * strafe;
   let mvy = sin * fwd + cos * strafe;
@@ -2634,7 +2645,17 @@ async function createTeammateFromMixamo() {
   // Loop policies
   if (actions.HitReact) { actions.HitReact.setLoop(THREE.LoopOnce, 1); actions.HitReact.clampWhenFinished = true; }
   if (actions.Dying)    { actions.Dying.setLoop(THREE.LoopOnce, 1);    actions.Dying.clampWhenFinished    = true; }
-  if (actions.Firing)   { actions.Firing.setLoop(THREE.LoopOnce, 1);   actions.Firing.clampWhenFinished   = true; }
+  if (actions.Firing)   {
+    actions.Firing.setLoop(THREE.LoopOnce, 1);
+    actions.Firing.clampWhenFinished   = true;
+    // User feedback: the Mixamo Firing_Rifle clip is very dramatic — the
+    // whole spine + arms jerk hard on each shot, making the attached
+    // rifle jump violently. Reduce effective weight so the pose blends
+    // subtly over the base Idle/Walking pose instead of overwriting it.
+    // 0.35 keeps a visible kick without making the rifle look like it's
+    // firing a howitzer.
+    actions.Firing.setEffectiveWeight(0.35);
+  }
   // Start on Idle
   if (actions.Idle) actions.Idle.play();
 
@@ -3675,24 +3696,32 @@ function renderWorld3d(dt) {
   updateTeammate(dt);
   if (USE_3D_WORLD) _syncEnemyMeshes(dt);           // Phase 2: enemies as 3D humanoids
 
-  // ----- sniper scope: world FOV zoom + overlay + body class -----------
-  // Base horizontal FOV = FOV (Math.PI/3 = 60°). Scoped horizontal FOV = 20°.
-  // We lerp the camera's VERTICAL FOV so silhouettes align with the aspect.
+  // ----- sniper scope OR laser holo sight: world FOV zoom + overlay -----
+  // Base hFOV = FOV (~60°). Sniper scoped hFOV = 20° (deep zoom). Laser
+  // holo sight hFOV = 35° (mid zoom). We lerp the camera's VERTICAL FOV
+  // so silhouettes align with the current aspect ratio.
   const scoped = _isScoped();
+  const holo   = _isLaserScoped();
   if (world3d.baseVFov === undefined) world3d.baseVFov = cam.fov;
   const aspect = cam.aspect;
-  const targetHFov = scoped ? 20 : (FOV * 180 / Math.PI);   // horizontal deg
+  const targetHFov = scoped ? 20 : (holo ? 35 : (FOV * 180 / Math.PI));
   const targetVFov = 2 * Math.atan(Math.tan(targetHFov * Math.PI / 360) / aspect) * 180 / Math.PI;
   cam.fov += (targetVFov - cam.fov) * Math.min(1, dt * 12);
   cam.updateProjectionMatrix();
 
-  // Sync the DOM overlay + body class. Toggle only on change to avoid
+  // Sync the DOM overlays + body classes. Toggle only on change to avoid
   // hitting the layout engine every frame.
   if (world3d._prevScoped !== scoped) {
     world3d._prevScoped = scoped;
     document.body.classList.toggle("scope-active", scoped);
     const ov = document.getElementById("scopeOverlay");
     if (ov) ov.classList.toggle("hidden", !scoped);
+  }
+  if (world3d._prevHolo !== holo) {
+    world3d._prevHolo = holo;
+    document.body.classList.toggle("holo-active", holo);
+    const ov = document.getElementById("laserScopeOverlay");
+    if (ov) ov.classList.toggle("hidden", !holo);
   }
 
   world3d.renderer.render(world3d.scene, cam);

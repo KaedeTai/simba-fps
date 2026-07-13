@@ -66,6 +66,81 @@
   body.scope-active #weapon3d,
   body.scope-active #crosshair { visibility: hidden; }
 
+  /* === Laser rifle holographic sight ======================================
+     Sci-fi HUD overlay for the laser rifle's ADS state. NOT a vignette —
+     the whole screen stays visible; only a cyan-glowing rectangular frame
+     + center reticle + corner labels get drawn. Viewmodel and crosshair
+     remain visible (holo is glued to the weapon). Toggled via body.holo-
+     active from JS. */
+  #laserScopeOverlay { position: fixed; inset: 0; z-index: 5;
+    pointer-events: none; }
+  #laserScopeOverlay.hidden { display: none; }
+  #laserScopeOverlay .holo-frame {
+    position: absolute; top: 22%; left: 22%; right: 22%; bottom: 22%;
+    border: 1.5px solid rgba(64, 207, 255, 0.75);
+    border-radius: 4px;
+    box-shadow:
+      0 0 24px rgba(64, 207, 255, 0.35),
+      inset 0 0 24px rgba(64, 207, 255, 0.18);
+  }
+  /* Corner brackets — draw shorter L-shapes over the border corners to
+     get that "targeting HUD" look without a full square. */
+  #laserScopeOverlay .holo-frame::before,
+  #laserScopeOverlay .holo-frame::after {
+    content: ""; position: absolute; width: 22px; height: 22px;
+    border: 2px solid #40cfff;
+  }
+  #laserScopeOverlay .holo-frame::before {
+    top: -3px; left: -3px;
+    border-right: none; border-bottom: none;
+  }
+  #laserScopeOverlay .holo-frame::after {
+    bottom: -3px; right: -3px;
+    border-left: none; border-top: none;
+  }
+  #laserScopeOverlay .holo-reticle {
+    position: absolute; top: 50%; left: 50%;
+    width: 60px; height: 60px;
+    transform: translate(-50%, -50%);
+  }
+  #laserScopeOverlay .holo-dot {
+    position: absolute; top: 50%; left: 50%;
+    width: 3px; height: 3px;
+    background: #40cfff;
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    box-shadow: 0 0 6px #40cfff, 0 0 12px rgba(64, 207, 255, 0.6);
+  }
+  /* Four tick marks — top/bottom vertical, left/right horizontal.
+     Placed just outside the center dot to leave a visible gap for aim. */
+  #laserScopeOverlay .holo-tick {
+    position: absolute; background: #40cfff;
+    box-shadow: 0 0 4px rgba(64, 207, 255, 0.7);
+  }
+  #laserScopeOverlay .tick-t, #laserScopeOverlay .tick-b {
+    left: 50%; width: 1.5px; height: 10px; margin-left: -0.75px;
+  }
+  #laserScopeOverlay .tick-t { top: 0; }
+  #laserScopeOverlay .tick-b { bottom: 0; }
+  #laserScopeOverlay .tick-l, #laserScopeOverlay .tick-r {
+    top: 50%; width: 10px; height: 1.5px; margin-top: -0.75px;
+  }
+  #laserScopeOverlay .tick-l { left: 0; }
+  #laserScopeOverlay .tick-r { right: 0; }
+  /* Corner labels — flavor text at each corner of the holo frame. */
+  #laserScopeOverlay .holo-side {
+    position: absolute;
+    font: 11px "SF Mono", "Menlo", monospace;
+    letter-spacing: 1.5px;
+    color: #40cfff;
+    text-shadow: 0 0 6px rgba(64, 207, 255, 0.7);
+    opacity: 0.85;
+  }
+  #laserScopeOverlay .holo-tl { top: 18%; left: 18%; }
+  #laserScopeOverlay .holo-tr { top: 18%; right: 18%; }
+  #laserScopeOverlay .holo-bl { bottom: 18%; left: 18%; }
+  #laserScopeOverlay .holo-br { bottom: 18%; right: 18%; }
+
   /* z-index bumped to 4 so the muzzle flash / damage vignette overlays
      land above the opaque #world3d canvas from Phase 2. */
   #flash { position: fixed; inset: 0; pointer-events: none; opacity: 0; transition: opacity .05s;

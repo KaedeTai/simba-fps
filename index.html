@@ -100,6 +100,25 @@
   <div id="flash"></div>
   <div id="hurt"></div>
 
+  <!-- === laser rifle holographic sight: shown only when laser is equipped
+       + aim held. Mid-zoom (FOV 35°) with a cyan-glowing rectangular
+       holo frame + center dot + tick marks. Viewmodel stays visible
+       (holo is glued to the weapon, not an eyecup). === -->
+  <div id="laserScopeOverlay" class="hidden">
+    <div class="holo-frame"></div>
+    <div class="holo-reticle">
+      <div class="holo-dot"></div>
+      <div class="holo-tick tick-t"></div>
+      <div class="holo-tick tick-b"></div>
+      <div class="holo-tick tick-l"></div>
+      <div class="holo-tick tick-r"></div>
+    </div>
+    <div class="holo-side holo-tl">◤ ENERGY 100%</div>
+    <div class="holo-side holo-tr">RANGE ∞ ◥</div>
+    <div class="holo-side holo-bl">◣ LOCK ON</div>
+    <div class="holo-side holo-br">TARGET ✓ ◢</div>
+  </div>
+
   <!-- === sniper scope overlay: shown only when sniper is equipped + right-mouse held === -->
   <div id="scopeOverlay" class="hidden">
     <svg class="scope-reticle" viewBox="0 0 200 200" preserveAspectRatio="xMidYMid meet">
