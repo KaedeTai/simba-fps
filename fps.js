@@ -547,36 +547,6 @@ function startWave() {
 }
 
 // ---------- Input ----------
-// Capture-phase guard: while a match is active, veto any Cmd/Ctrl + letter
-// combo that would close the tab / reload / navigate away. The user holds
-// Cmd (or Ctrl on Win) as an ADS input; if they then tap W (walk forward)
-// the browser sees Cmd+W and closes the tab. preventDefault stops that
-// browser default, but the letter key itself still updates keys[e.code]
-// below so WASD movement continues to work.
-//
-// DevTools stays reachable via Cmd+Alt+I / Cmd+Shift+I / Cmd+Shift+J — we
-// don't want to lock the developer out of the running page.
-// Cmd+Q (Mac quit application) is OS-level and cannot be canceled — the
-// beforeunload saveRun catches that path.
-addEventListener("keydown", e => {
-  const inGame = running && !paused && !gameOver && !shopOpen;
-  if (!inGame) return;                 // menus / start / dead: leave Cmd+R etc. alone
-  if (!(e.metaKey || e.ctrlKey)) return;
-  // DevTools whitelist — never block these
-  if (e.altKey && e.code === "KeyI") return;                        // Cmd+Alt+I
-  if (e.shiftKey && (e.code === "KeyI" || e.code === "KeyJ" || e.code === "KeyC")) return;
-  // Block the letter combos that would navigate/close the tab
-  const bad = ["KeyW","KeyR","KeyT","KeyN","KeyQ","KeyM","KeyD",
-               "KeyA","KeyS","KeyL","KeyH","KeyP","KeyE","KeyF"];
-  if (bad.includes(e.code)) {
-    // preventDefault ONLY — no stopPropagation. The main keydown handler
-    // below still needs to receive the event so it can set keys[e.code],
-    // otherwise Cmd+W would neither close the tab (good) nor register as
-    // walk-forward (bad — teammate wouldn't move while you aim).
-    e.preventDefault();
-  }
-}, true);   // capture phase — run before anything else so we can veto browser default
-
 addEventListener("keydown", e => {
   keys[e.code] = true;
   if (e.code === "KeyR") reload();
@@ -584,13 +554,13 @@ addEventListener("keydown", e => {
   // reloads. saveRun's beforeunload hook preserves the current run so
   // the mode change is seamless.
   if (e.code === "F2") { e.preventDefault(); toggleWorld3dMode(); return; }
-  // Cmd (Mac) / Windows key — keyboard equivalent of right-mouse ADS.
-  // Cmd combos like Cmd+R still work; a bare Cmd keydown does fire and
-  // we set aiming3d. Same guards as the right-mouse handler.
-  if ((e.code === "MetaLeft" || e.code === "MetaRight") &&
-      running && !paused && !gameOver && !shopOpen) {
+  // F key — keyboard equivalent of right-mouse ADS. Switched from Cmd/Meta
+  // because Cmd+W (close tab) is OS-level on macOS and preventDefault
+  // can't cancel it. F has no OS-level conflicts, is easy to hold with the
+  // left thumb while WASD-fingering, and matches the "F for flashlight /
+  // interact" convention many FPS games use.
+  if (e.code === "KeyF" && running && !paused && !gameOver && !shopOpen) {
     aiming3d = true;
-    e.preventDefault();
     return;
   }
   const dm = e.code.match(/^Digit([1-9])$/);
@@ -604,8 +574,8 @@ addEventListener("keydown", e => {
 });
 addEventListener("keyup", e => {
   keys[e.code] = false;
-  // Meta key release ends the ADS started by keydown.
-  if (e.code === "MetaLeft" || e.code === "MetaRight") aiming3d = false;
+  // F key release ends the ADS started by keydown.
+  if (e.code === "KeyF") aiming3d = false;
 });
 screen.addEventListener("mousedown", e => { if (e.button === 0) { mouseDown = true; tryShoot(); } });
 addEventListener("mouseup", e => { if (e.button === 0) mouseDown = false; });
