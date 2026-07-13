@@ -2578,57 +2578,68 @@ function updateTeammate(dt) {
   e.prevMuzzle = ally.muzzle;
 
   // ----- position + walking detection --------------------------------------
+  // Velocity-averaged + hysteresis. Single-frame dx=dy=0 from AI stalls
+  // (blocked path, target check, etc.) used to flip walking → false for
+  // one frame, then true → State machine crossfaded every ~200ms and
+  // the "start of new walking session" snap re-fired constantly. Now:
+  //   1. Buffer last 8 frames of |velocity| and use the mean.
+  //   2. Two thresholds — need vAvg > 0.010 to ENTER walking, and only
+  //      drop back to Idle when vAvg < 0.003. This asymmetric hysteresis
+  //      matches the "hard to start moving, easy to keep moving, sticky
+  //      to stopping" feel typical of tactical AI.
   const dx = ally.x - e.prevX, dy = ally.y - e.prevY;
-  const moved = Math.hypot(dx, dy);
-  const walking = moved > 0.002;
+  const vNow = Math.hypot(dx, dy);
+  e.velBuf = e.velBuf || [];
+  e.velBuf.push(vNow);
+  if (e.velBuf.length > 8) e.velBuf.shift();
+  const vAvg = e.velBuf.reduce((a, b) => a + b, 0) / e.velBuf.length;
+  const enterT = 0.010, exitT = 0.003;
+  const walking = e.wasWalking ? (vAvg > exitT) : (vAvg > enterT);
+  e.wasWalking = walking;
   e.prevX = ally.x; e.prevY = ally.y;
 
-  // ----- facing: firing snaps to aim, walking uses snap-once + drift-lock,
-  // idle preserves. Reworked from the previous "angle-gate every frame"
-  // because that still let the teammate slowly track the player whenever
-  // the walk velocity happened to align with current facing (which it does
-  // constantly when the AI is set to follow the player).
+  // ----- facing: true lock-current-rotation semantics -----
+  // Previous approaches all snapped rotation to velocity or aim direction
+  // when walking started, which put the teammate FACING the player when
+  // the AI's walk was toward them. Even hysteresis on the state machine
+  // (above) wouldn't help because the ONE snap moment at walk-start already
+  // did the damage.
   //
-  // New rules:
-  //   Firing (muzzle > 0)  → snap rotation to aim SNAPSHOT (unchanged)
-  //   Walking, fresh start → snap to first movement direction (walkFacingLocked=true)
-  //   Walking, stable dir  → preserve locked direction (no drift toward player)
-  //   Walking, dir changed → snap to new direction if delta > 90° from
-  //                          current facing (a genuinely-new heading)
-  //   Idle (>0.5s)         → unlock, next walking start will re-snap
+  // New rule matches the user's spec verbatim ("他最後是什麼方向就應該
+  // 維持那個方向"): the moment we start walking, we lock IN PLACE — we
+  // freeze whatever rotation.y currently is and hold it for the whole
+  // walking session. No re-snap to velocity, no drift toward the target,
+  // period. Only firing (a real aim event) or a long idle (>1 s) unlocks.
+  //
+  //   Firing (muzzle > 0)   → snap to aim SNAPSHOT + unlock walking-lock
+  //   Walking, freshly entered → snapshot CURRENT rotation.y and lock it
+  //   Walking, ongoing      → hold locked rotation, never re-snap
+  //   Idle, <1s             → preserve (don't unlock so brief pauses
+  //                            during a walk don't reset the freeze)
+  //   Idle, >1s             → unlock; next walking will freeze fresh
   if (ally.muzzle > 0) {
     e.group.rotation.y = Math.PI / 2 - e.aimDir;
-    e.walkFacingLocked = false;                       // firing resets lock
-    e.idleTimer = 0;
+    e.walkFacingLocked = false;
+    e.idleSince = 0;
   } else if (walking) {
-    e.idleTimer = 0;
-    const moveDir = Math.atan2(dy, dx);
-    const desiredRotY = Math.PI / 2 - moveDir;
+    e.idleSince = 0;
     if (!e.walkFacingLocked) {
-      // First frame of a walking session — snap facing to velocity.
-      e.group.rotation.y = desiredRotY;
+      // Freshly entered walking. Take a snapshot of whatever the current
+      // facing is — this is what the teammate was last aimed at / last
+      // walking toward / whatever the wasDead branch set them to.
+      e.walkFacingLockedRotY = e.group.rotation.y;
       e.walkFacingLocked = true;
-    } else {
-      // Only re-snap on a big heading change (>90° from current facing).
-      // Small drift keeps facing untouched so the teammate can approach
-      // the player without slowly turning to face them.
-      let delta = desiredRotY - e.group.rotation.y;
-      while (delta > Math.PI)  delta -= 2 * Math.PI;
-      while (delta < -Math.PI) delta += 2 * Math.PI;
-      if (Math.abs(delta) > Math.PI / 2) {
-        // Big heading change (e.g. teammate started walking in the
-        // opposite direction) — treat as a new session and re-snap.
-        e.group.rotation.y = desiredRotY;
-      }
-      // else: preserve locked facing (stable straight walk toward player
-      //       no longer drifts the body to face them).
     }
+    // Hold the frozen rotation for the entire walking session — no
+    // velocity-based updates. Teammate walks sideways/backwards toward
+    // wherever the AI directs, body stays fixed.
+    e.group.rotation.y = e.walkFacingLockedRotY;
   } else {
-    // Idle. Preserve rotation. Unlock walking-facing after brief hold so
-    // a resumed walk gets a fresh snap; don't unlock instantly so
-    // sub-frame velocity jitter doesn't re-trigger the snap every tick.
-    e.idleTimer = (e.idleTimer || 0) + dt;
-    if (e.idleTimer > 0.4) e.walkFacingLocked = false;
+    // Idle: preserve. Unlock only after 1 s of continuous idle so a
+    // brief in-walk stall (single frame of vAvg dip below exitT that
+    // still slips through hysteresis) doesn't clear the lock.
+    e.idleSince = (e.idleSince || 0) + dt;
+    if (e.idleSince > 1.0) e.walkFacingLocked = false;
   }
 
   // ----- position (world) — always Y=0 for Mixamo (mesh's own feet-anchor)
