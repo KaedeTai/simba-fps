@@ -51,9 +51,15 @@
       rgba(255,0,0,0) 42%, rgba(200,0,0,.35) 78%, rgba(150,0,0,.72) 100%); }
 
   #weapon  { position: fixed; bottom: 0; left: 50%; transform: translateX(-50%); pointer-events: none; z-index: 2; }
-  /* === 3D world entities: full-screen transparent overlay for teammate/enemies === */
+  /* === 3D world entities: full-screen transparent overlay for teammate/enemies ===
+     Default hidden — the Phase 2 opaque background would otherwise cover the
+     start screen (title, keys, map picker) after a page load. Shown once JS
+     adds body.game-running (in startGame / restoreRun). Reset button reloads
+     the page, which clears the class, so we return to the start screen with
+     world3d hidden again. */
   #world3d { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
-             pointer-events: none; z-index: 1; }
+             pointer-events: none; z-index: 1; visibility: hidden; }
+  body.game-running #world3d { visibility: visible; }
   /* === 3D pistol prototype === */
   #weapon3d { position: fixed; bottom: 0; left: 50%; transform: translateX(-50%);
               pointer-events: none; display: none; z-index: 3; }

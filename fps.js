@@ -407,6 +407,9 @@ function restoreRun(d) {
   buildShop();
   $("start").classList.add("hidden");
   $("over").classList.add("hidden");
+  // Reveal the (opaque) #world3d canvas — same as startGame(), needed on
+  // page-load auto-resume too so the restored session sees the 3D world.
+  document.body.classList.add("game-running");
   // If the save caught us mid-shop, restore that screen instead of pause,
   // so the wave-clear detector in update() doesn't re-fire and double-
   // increment the wave counter.
@@ -710,6 +713,9 @@ function startGame() {
   $("over").classList.add("hidden");
   $("pause").classList.add("hidden");
   $("shop").classList.add("hidden");
+  // Reveal the (opaque) #world3d canvas — hidden by default so the start
+  // screen is visible on fresh page loads and after Reset -> reload.
+  document.body.classList.add("game-running");
   buildShop();
   lock();
 }
