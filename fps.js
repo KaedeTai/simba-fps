@@ -2641,11 +2641,18 @@ const world3d = {
 // mesh's hip-centered origin).
 // =========================================================================
 const MIXAMO_BASE = "assets/models/vanguard/";
+// Idle / Walking / Firing now come from Mixamo's "Basic Shooter Pack" —
+// the base Vanguard idle+walking clips have the rifle tucked under the
+// armpit which reads badly for a combat teammate. The Shooter Pack ships
+// rifle-ready poses: chest-carry idle, tactical carry walking, and a
+// noticeably subtler firing pose than Firing_Rifle.glb. AimWalk /
+// HitReact / Dying stay on the original clips because they still
+// integrate the rifle plausibly and re-authoring them isn't worth it.
 const MIXAMO_FILES = {
   character: "vanguard.glb",
-  Idle:      "Idle.glb",
-  Walking:   "Walking.glb",
-  Firing:    "Firing_Rifle.glb",
+  Idle:      "Rifle_Aim_Idle.glb",   // was Idle.glb (arms-down)
+  Walking:   "Rifle_Walking.glb",    // was Walking.glb (unarmed stride)
+  Firing:    "Rifle_Firing.glb",     // was Firing_Rifle.glb (very dramatic)
   AimWalk:   "Standing_Aim_Walk_Forward.glb",
   HitReact:  "Hit_Reaction.glb",
   Dying:     "Dying.glb",
