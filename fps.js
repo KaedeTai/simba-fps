@@ -43,7 +43,12 @@ console.log("[fps][world3d] mode:", USE_3D_WORLD ? "3D" : "2.5D",
 // P prints current values to console. Reapplies to the attached rifle in
 // real time via world3d.entities.teammate.rifle.
 function _readRifleDbg() {
-  let rx = 0.5, ry = 0.5, rz = 0;
+  // Defaults baked from user's live-tuning session against the Basic
+  // Shooter Pack Idle pose. (-π/2, 0, -π/2) lines the muzzle up along
+  // the teammate's forward direction with the grip pointed down. URL
+  // query still overrides so future poses can be re-tuned without a
+  // code change.
+  let rx = -0.5, ry = 0, rz = -0.5;
   try {
     const u = new URLSearchParams(location.search);
     if (u.has("rifleRX")) rx = parseFloat(u.get("rifleRX"));
@@ -3058,12 +3063,6 @@ async function createTeammateFromMixamo() {
     //      Keys: [/] adjust X, ;/' adjust Y, ,/. adjust Z (0.05π step).
     //      P prints current values to console so they can be copied back.
     rifle.rotation.set(_rifleDbg.rx * Math.PI, _rifleDbg.ry * Math.PI, _rifleDbg.rz * Math.PI);
-    // Temporary diagnostic — an AxesHelper glued to the rifle so the user
-    // can screenshot and confirm which world-axis the barrel actually
-    // points along. Red = X, Green = Y, Blue = Z. Remove once orientation
-    // is nailed down.
-    const _rifleAxes = new THREE.AxesHelper(0.12);
-    rifle.add(_rifleAxes);
     // World-space offset we WANT: rifle grip ~5 cm forward of palm, 2 cm
     // down (into fist). Bone-local coords get multiplied by handScale to
     // become world, so multiply by invScale here.
@@ -3687,27 +3686,6 @@ function updateTeammate(dt) {
   // frames. Skipped for procedural (has no mixer).
   if (e.isMixamo && e.mixer) e.mixer.update(dt);
 
-  // Periodic rifle-orientation diagnostic (once per ~1 s at 60 FPS). Prints
-  // the right-hand bone's world quaternion and the rifle's world forward
-  // vector so we can eyeball whether the muzzle is level (fwd ~= (X, ~0, Z))
-  // or angled at the sky (fwd.y > 0). Runs only while the entity has a
-  // real rifle attached and the game is running to avoid log noise.
-  if (e.isMixamo && e.rifle && e.rightHand && !gameOver && !paused) {
-    e._diagCounter = (e._diagCounter || 0) + 1;
-    if (e._diagCounter >= 60) {
-      e._diagCounter = 0;
-      const handQ = new THREE.Quaternion();
-      e.rightHand.updateMatrixWorld(true);
-      e.rightHand.getWorldQuaternion(handQ);
-      const rifleQ = new THREE.Quaternion();
-      e.rifle.updateMatrixWorld(true);
-      e.rifle.getWorldQuaternion(rifleQ);
-      const rifleFwd = new THREE.Vector3(0, 0, -1).applyQuaternion(rifleQ);
-      console.log("[fps][teammate] rifle-orient",
-        "hand q:", handQ.toArray().map(v => v.toFixed(2)),
-        "rifle world fwd:", rifleFwd.toArray().map(v => v.toFixed(2)));
-    }
-  }
   // Decay the state-hold timer used by _crossfadeTeammate to prevent
   // sub-frame flapping between Idle and Walking.
   if (e.stateHoldT > 0) e.stateHoldT -= dt;
