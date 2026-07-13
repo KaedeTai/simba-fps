@@ -1008,12 +1008,13 @@ function update(dt) {
 
   // Movement — combine keyboard and touch joystick into forward/strafe scalars.
   // Complete case-based speed matrix (user-specified, tactical FPS feel):
-  //   pure W           1.0x  sprint OK   ← only case where Shift boosts
-  //   W + A / W + D    1.0x  sprint NO   ← diagonal-forward doesn't sprint
+  //   pure W           1.0x  sprint OK
+  //   W + A / W + D    1.0x  sprint OK   ← diagonal-forward DOES sprint
   //   pure S           0.5x  sprint NO
   //   S + A / S + D    0.7x  sprint NO   ← strafe wins over backward
   //   pure A / D       0.7x  sprint NO
   //   (no input)       -                 ← gated by `if (mlen > 0)`
+  // Sprint rule: fwd > 0 (any forward component allows sprint).
   const BACKWARD_MULT = 0.5;
   const STRAFE_MULT   = 0.7;
   const sprinting = keys["ShiftLeft"] || keys["ShiftRight"] || touchSprint;
@@ -1031,9 +1032,9 @@ function update(dt) {
   const isStrafe = strafe !== 0;
   let mult = 0, allowSprint = false;                              // no-input default
   if      (isFwd  && !isStrafe) { mult = 1.0;           allowSprint = true;  }  // pure W
-  else if (isFwd  &&  isStrafe) { mult = 1.0;           allowSprint = false; }  // W+A / W+D
+  else if (isFwd  &&  isStrafe) { mult = 1.0;           allowSprint = true;  }  // W+A / W+D (sprint OK)
   else if (isBack && !isStrafe) { mult = BACKWARD_MULT; allowSprint = false; }  // pure S
-  else if (isBack &&  isStrafe) { mult = STRAFE_MULT;   allowSprint = false; }  // S+A / S+D (strafe wins)
+  else if (isBack &&  isStrafe) { mult = STRAFE_MULT;   allowSprint = false; }  // S+A / S+D (strafe wins over backward)
   else if (             isStrafe) { mult = STRAFE_MULT; allowSprint = false; }  // pure A / D
   const spd = ((sprinting && allowSprint) ? player.sprint : player.speed) * dt;
   let mvx = cos * fwd - sin * strafe;
