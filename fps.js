@@ -554,6 +554,15 @@ addEventListener("keydown", e => {
   // reloads. saveRun's beforeunload hook preserves the current run so
   // the mode change is seamless.
   if (e.code === "F2") { e.preventDefault(); toggleWorld3dMode(); return; }
+  // Cmd (Mac) / Windows key — keyboard equivalent of right-mouse ADS.
+  // Cmd combos like Cmd+R still work; a bare Cmd keydown does fire and
+  // we set aiming3d. Same guards as the right-mouse handler.
+  if ((e.code === "MetaLeft" || e.code === "MetaRight") &&
+      running && !paused && !gameOver && !shopOpen) {
+    aiming3d = true;
+    e.preventDefault();
+    return;
+  }
   const dm = e.code.match(/^Digit([1-9])$/);
   if (dm) switchWeapon(+dm[1] - 1);
   if (e.code === "KeyQ") cycleWeapon(-1);
@@ -563,7 +572,11 @@ addEventListener("keydown", e => {
     if (shopOpen) closeShop(); else if (running && !gameOver && !paused) openShop(false);
   }
 });
-addEventListener("keyup", e => { keys[e.code] = false; });
+addEventListener("keyup", e => {
+  keys[e.code] = false;
+  // Meta key release ends the ADS started by keydown.
+  if (e.code === "MetaLeft" || e.code === "MetaRight") aiming3d = false;
+});
 screen.addEventListener("mousedown", e => { if (e.button === 0) { mouseDown = true; tryShoot(); } });
 addEventListener("mouseup", e => { if (e.button === 0) mouseDown = false; });
 // === 3D weapons prototype: right mouse = ADS (aim-down-sights) ===
@@ -692,6 +705,11 @@ function lock() { if (!touchMode && screen.requestPointerLock) screen.requestPoi
 
 // bind touch buttons now that helpers exist
 bindBtn("btnFire", () => { mouseDown = true; tryShoot(); }, () => { mouseDown = false; });
+// Aim button — touch equivalent of right-mouse. Hold to ADS (sniper enters
+// scope mode), release to lower.
+bindBtn("btnAim",
+  () => { if (running && !paused && !gameOver && !shopOpen) aiming3d = true; },
+  () => { aiming3d = false; });
 bindBtn("btnReload", () => reload());
 bindBtn("btnSwitch", () => cycleWeapon(1));
 bindBtn("btnSprint", () => {

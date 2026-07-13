@@ -191,6 +191,10 @@
     -webkit-tap-highlight-color: transparent; }
   .touchbtn:active { background: rgba(125,255,154,.35); transform: scale(.94); }
   .touchbtn.toggled { background: rgba(125,255,154,.35); border-color: #7dff9a; color: #7dff9a; }
+  /* Aim button — cyan tinted, left of switch button + above reload so the
+     thumb can reach it without covering the fire button. */
+  #btnAim  { right: 168px; bottom: 258px; width: 68px; height: 68px; font-size: 13px;
+             background: rgba(77,208,255,.22); border-color: rgba(120,220,255,.70); }
   #btnFire { right: 30px; bottom: 130px; width: 116px; height: 116px; font-size: 19px;
     background: rgba(255,90,90,.24); border-color: rgba(255,120,120,.65); }
   #btnReload { right: 164px; bottom: 168px; width: 68px; height: 68px; }
