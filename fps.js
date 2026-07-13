@@ -3799,8 +3799,34 @@ function updateTeammate(dt) {
   // that spin during the flash decay.
   if (ally.muzzle > e.prevMuzzle) {
     e.aimDir = ally.dir;
+    // Trigger a rifle-mesh recoil kick — the Firing_Rifle animation in
+    // the Basic Shooter Pack is a hip-fire (arms wide) that reads
+    // wrong on our aim-idle Idle. Instead of playing the full clip we
+    // keep the teammate's skeleton in Idle/Walking and pitch the
+    // rifle mesh up briefly on each shot. 0.15 s kick duration, peak
+    // amplitude ~0.25 rad.
+    if (e.isMixamo) e._rifleKickT = 0.15;
   }
   e.prevMuzzle = ally.muzzle;
+
+  // ---- Apply rifle-mesh recoil kick (mixamo teammates only) ----
+  // While _rifleKickT > 0, pitch the rifle up by a linearly-decaying
+  // offset added to the base _rifleDbg.rx rotation. When the timer
+  // expires we snap the rifle back to base one last time — after that
+  // frame the debug-tuning path owns rifle.rotation exclusively so live
+  // key adjustments still work.
+  if (e.isMixamo && e.rifle && e._rifleKickT !== undefined) {
+    if (e._rifleKickT > 0) {
+      e._rifleKickT -= dt;
+      const t = Math.max(0, e._rifleKickT) / 0.15;
+      const kick = t * 0.25;                          // radians, decays 0.25 → 0
+      e.rifle.rotation.x = _rifleDbg.rx * Math.PI - kick;
+      e._rifleKickWasActive = true;
+    } else if (e._rifleKickWasActive) {
+      e.rifle.rotation.x = _rifleDbg.rx * Math.PI;   // final settle to base
+      e._rifleKickWasActive = false;
+    }
+  }
 
   // ----- position + walking detection --------------------------------------
   // Velocity-averaged + hysteresis. Previous version used an 8-frame
@@ -3884,7 +3910,12 @@ function updateTeammate(dt) {
     // in the ally.dead branch above; we never reach here while dead.
     let next;
     if (ally.hurt > 0.05)      next = "HitReact";
-    else if (ally.muzzle > 0)  next = "Firing";
+    // NOTE: Firing skipped intentionally. The Basic Shooter Pack's
+    // "firing rifle" clip is a hip-fire with the arms flung wide, which
+    // reads terribly on top of an aim-ready Idle. We keep the skeleton
+    // on Idle/Walking and instead pitch the rifle mesh up per-shot
+    // (see _rifleKickT block in updateTeammate above). The action is
+    // still LOADED so future firing clips can be dropped in.
     else if (walking)          next = "Walking";
     else                       next = "Idle";
     // Fallback graceful-degrade: if a specific clip didn't load, pick
