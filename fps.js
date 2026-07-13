@@ -3409,13 +3409,31 @@ $("resetBtn").onclick = () => {
   const d = loadRun();
   console.log("[fps][save] check localStorage:",
     d ? ("found run @ wave " + d.wave + ", resuming") : "none, fresh start");
-  if (!d) return;
+  console.log("[fps][boot] page-state @ IIFE", {
+    saveExists:      !!localStorage.getItem("simbafps:run:v1"),
+    bodyClasses:     document.body.className || "(empty)",
+    startHidden:     $("start").classList.contains("hidden"),
+    pauseHidden:     $("pause").classList.contains("hidden"),
+    overHidden:      $("over").classList.contains("hidden"),
+  });
+  if (!d) {
+    // Fresh page (no save, or Reset just cleared it): explicitly force the
+    // start-screen state. Belt-and-braces against any pre-IIFE code path
+    // that might have left body / screen classes in an intermediate state.
+    document.body.classList.remove("game-running");
+    $("start").classList.remove("hidden");
+    $("pause").classList.add("hidden");
+    $("over").classList.add("hidden");
+    $("shop").classList.add("hidden");
+    return;
+  }
   try {
     restoreRun(d);
   } catch (err) {
     console.warn("[fps][save] restoreRun threw — clearing corrupt save and falling back to start screen:", err);
     clearRun();
     running = false; paused = false; gameOver = false; shopOpen = false;
+    document.body.classList.remove("game-running");
     $("pause").classList.add("hidden");
     $("over").classList.add("hidden");
     $("shop").classList.add("hidden");
