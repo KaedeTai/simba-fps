@@ -685,6 +685,9 @@ function startGame() {
   score = 0; wave = 1; kills = 0;
   coins = profile.coins || 0;                    // carry over banked coins
   loadMap(selectedMap);
+  // Phase 1: rebuild 3D wall geometry to match the newly-loaded map.
+  // No-op if world3d isn't ready yet or USE_3D_WORLD is false.
+  if (typeof rebuildWorld3d === "function") rebuildWorld3d();
   const sp = MAPS[curMap].spawn;
   player.maxHp = profile.maxHp || 100;           // carry over max-HP upgrades
   player.x = sp.x; player.y = sp.y; player.dir = 0; player.pitch = 0; player.hp = player.maxHp;
@@ -851,7 +854,8 @@ function enemyRect(e) {
   const screenX = W / 2 + Math.tan(ang) * (W / 2) / Math.tan(FOV / 2);
   const size = Math.min(H * 3.6, H / dist) * (e.sizeScale || 1);
   const spriteW = size * 0.62, spriteH = size;
-  const horizon = HALF_H + Math.sin(player.bob) * 3 + player.pitch;
+  // player.bob no longer contributes to horizon — camera head-bob removed.
+  const horizon = HALF_H + player.pitch;
   const groundY = horizon + Math.min(H * 1.8, H / dist) / 2;
   const topY = groundY - spriteH;
   return { x0: screenX - spriteW / 2, x1: screenX + spriteW / 2, y0: topY, y1: topY + spriteH, dist };
@@ -1113,8 +1117,10 @@ function update(dt) {
 // ---------- Render: walls (raycasting DDA) ----------
 const zbuffer = new Float32Array(8192);
 function renderWorld() {
-  const pitchBob = Math.sin(player.bob) * 3;
-  const horizon = HALF_H + pitchBob + player.pitch;   // vertical look shifts the horizon
+  // Camera head-bob during movement removed per user request (motion-
+  // comfort). player.bob is still accumulated by the movement code
+  // so the weapon viewmodel bob keeps its animated value.
+  const horizon = HALF_H + player.pitch;                 // vertical look shifts the horizon
   const hz = Math.max(1, Math.min(H - 1, horizon));   // clamp only for gradient endpoints
   const top = Math.max(0, horizon);
 
@@ -1168,6 +1174,11 @@ function renderWorld() {
     wallHit -= Math.floor(wallHit);
     const band = (Math.floor(wallHit * 6) % 2 === 0) ? 1 : 0.86;
 
+    // Phase 1: 3D walls in world3d overlay render on top of everything on
+    // this 2D canvas. Skip the 2D wall paint to save overdraw. The DDA
+    // above still runs so `zbuffer` is populated for renderEnemies to
+    // use for its per-column occlusion of 2D billboards.
+    if (USE_3D_WORLD) continue;
     const sh = shade * band;
     ctx.fillStyle = `rgb(${(wallRGB[0]*sh)|0},${(wallRGB[1]*sh)|0},${(wallRGB[2]*sh)|0})`;
     ctx.fillRect(i * COL_W, y0, COL_W + 1, lineH);
@@ -1178,7 +1189,7 @@ function renderWorld() {
 
 // ---------- Render: enemies + ally (billboards) ----------
 function renderEnemies() {
-  const horizon = HALF_H + Math.sin(player.bob) * 3 + player.pitch;
+  const horizon = HALF_H + player.pitch;                 // camera head-bob removed
   const sprites = enemies.slice();
   // === 3D world entities: when the 3D layer is active, the teammate is drawn
   // by renderWorld3d() as a full mesh — skip the 2D billboard so we don't
@@ -2066,6 +2077,25 @@ function updateWeaponLayerVisibility() {
 //   * lower-body detach animation for ragdolls
 // =========================================================================
 const ENABLE_3D_ENTITIES = true;
+// === Phase 1 of 3D world rewrite ===
+// User chose 'B — full 3D world rewrite' after wall-corner clipping
+// still visible even with 5-point occlusion. Rollout plan:
+//   Phase 1 (this commit): walls / floor / ceiling as Three.js geometry
+//                          in world3d.scene. Z-buffer solves teammate
+//                          occlusion naturally. 2D raycaster skips wall
+//                          drawing when USE_3D_WORLD is true; falls back
+//                          to full 2D if this flag flips false.
+//   Phase 2:              collapse to a single player-camera driving
+//                          this scene; retire the raycaster wall loop
+//                          entirely (it currently short-circuits).
+//   Phase 3:              enemies + boss migrate from 2D billboard to
+//                          Three.js sprites, get natural depth sort.
+//   Phase 4:              bullets / hit-test move to THREE.Raycaster
+//                          from camera.
+//   Phase 5:              polish + retire the raycaster module.
+// HUD (weapon viewmodel, minimap, health bar, shop, save/load) is
+// untouched by any phase — pure DOM overlays. Save schema unchanged.
+const USE_3D_WORLD = true;
 
 const world3d = {
   canvas: null, scene: null, camera: null, renderer: null,
@@ -2451,6 +2481,52 @@ function createTeammateMesh() {
   };
 }
 
+// Phase 1: build the raycaster's MAP grid as real 3D wall geometry inside
+// world3d.scene. One BoxGeometry (1×1×1 unit, centered at Y=0.5) per wall
+// cell. Floor and ceiling are DELIBERATELY NOT included in Phase 1 — the
+// 2D floor gradient painted by renderWorld() and the enemy billboards
+// drawn on #game canvas both need to remain visible through the
+// world3d overlay. Adding opaque floor/ceiling planes would cover them.
+// Phase 2 will migrate enemies to 3D sprites, at which point we can add
+// the floor+ceiling meshes and turn off the 2D gradient.
+function _buildWorld3dGeometry(scene) {
+  const wallColor = wallRGB
+    ? new THREE.Color(wallRGB[0] / 255, wallRGB[1] / 255, wallRGB[2] / 255)
+    : new THREE.Color(0x606880);
+  const wallMat = new THREE.MeshStandardMaterial({
+    color: wallColor, roughness: 0.90, metalness: 0.05,
+  });
+  const wallGeo = new THREE.BoxGeometry(1, 1, 1);
+  const wallsGroup = new THREE.Group();
+  let wallCount = 0;
+  for (let y = 0; y < MAP_H; y++) {
+    for (let x = 0; x < MAP_W; x++) {
+      if (MAP[y][x] !== 1) continue;
+      const wall = new THREE.Mesh(wallGeo, wallMat);
+      wall.position.set(x + 0.5, 0.5, y + 0.5);   // center rests at Y=0.5
+      wallsGroup.add(wall);
+      wallCount++;
+    }
+  }
+  scene.add(wallsGroup);
+  console.log("[fps][world3d] Phase 1 geometry built", {
+    walls: wallCount, map: MAP_W + "x" + MAP_H,
+  });
+  world3d.wallsGroup = wallsGroup;
+}
+
+// Rebuild the 3D world when the player picks a different map at retry.
+// initWorld3d runs once and pins the first MAP; without this hook, a
+// second run on a different map would draw walls in the wrong places.
+function rebuildWorld3d() {
+  if (!world3d.ready || !USE_3D_WORLD) return;
+  if (world3d.wallsGroup) {
+    world3d.scene.remove(world3d.wallsGroup);
+    world3d.wallsGroup.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+  }
+  _buildWorld3dGeometry(world3d.scene);
+}
+
 function initWorld3d() {
   if (world3d.ready || world3d.disabled) return;
   if (typeof THREE === "undefined") return;         // Three.js not loaded yet — retry next frame
@@ -2470,7 +2546,7 @@ function initWorld3d() {
     const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     renderer.setSize(canvas.width, canvas.height, false);
-    renderer.setClearColor(0x000000, 0);              // transparent — see the 2D raycaster through it
+    renderer.setClearColor(0x000000, 0);              // transparent — 2D floor gradient + enemies show through
     // Three.js r155 renamed outputEncoding -> outputColorSpace and made
     // SRGBColorSpace the default for the output pipeline. r128 GLTFLoader
     // still writes the old `texture.encoding = sRGBEncoding` (which is
@@ -2486,6 +2562,11 @@ function initWorld3d() {
     scene.add(new THREE.AmbientLight(0xffffff, 0.85));
     const key = new THREE.DirectionalLight(0xfff2c8, 1.10); key.position.set( 2, 4,  1); scene.add(key);
     const rim = new THREE.DirectionalLight(0x9ac0ff, 0.45); rim.position.set(-2, 2, -3); scene.add(rim);
+
+    // Phase 1 world geometry — walls / floor / ceiling from MAP grid.
+    // Adds the same scene the teammate lives in, so z-buffer solves
+    // teammate-vs-wall occlusion naturally.
+    if (USE_3D_WORLD) _buildWorld3dGeometry(scene);
 
     // Build entities up front. Each entity stashes its animation state on
     // its own record so the render loop is a simple for-each dispatch.
