@@ -3799,32 +3799,51 @@ function updateTeammate(dt) {
   // that spin during the flash decay.
   if (ally.muzzle > e.prevMuzzle) {
     e.aimDir = ally.dir;
-    // Trigger a rifle-mesh recoil kick — the Firing_Rifle animation in
-    // the Basic Shooter Pack is a hip-fire (arms wide) that reads
-    // wrong on our aim-idle Idle. Instead of playing the full clip we
-    // keep the teammate's skeleton in Idle/Walking and pitch the
-    // rifle mesh up briefly on each shot. 0.15 s kick duration, peak
-    // amplitude ~0.25 rad.
-    if (e.isMixamo) e._rifleKickT = 0.15;
+    // Trigger a rifle-mesh recoil kick — the Firing_Rifle animation
+    // in the Basic Shooter Pack reads wrong so we skip it and pulse
+    // the rifle mesh only. Set the kick scalar to 1.0 on the rising
+    // edge; the per-frame block below decays it exponentially and
+    // applies position + rotation offsets.
+    if (e.isMixamo) e._kickT = 1.0;
   }
   e.prevMuzzle = ally.muzzle;
 
   // ---- Apply rifle-mesh recoil kick (mixamo teammates only) ----
-  // While _rifleKickT > 0, pitch the rifle up by a linearly-decaying
-  // offset added to the base _rifleDbg.rx rotation. When the timer
-  // expires we snap the rifle back to base one last time — after that
-  // frame the debug-tuning path owns rifle.rotation exclusively so live
-  // key adjustments still work.
-  if (e.isMixamo && e.rifle && e._rifleKickT !== undefined) {
-    if (e._rifleKickT > 0) {
-      e._rifleKickT -= dt;
-      const t = Math.max(0, e._rifleKickT) / 0.15;
-      const kick = t * 0.25;                          // radians, decays 0.25 → 0
-      e.rifle.rotation.x = _rifleDbg.rx * Math.PI - kick;
-      e._rifleKickWasActive = true;
-    } else if (e._rifleKickWasActive) {
-      e.rifle.rotation.x = _rifleDbg.rx * Math.PI;   // final settle to base
-      e._rifleKickWasActive = false;
+  // Previous version pitched rotation.x by 0.25 rad which, under the
+  // baked (-π/2, 0, -π/2) rifle rotation, read as the muzzle jutting
+  // FORWARD, not up — the wrong axis mapped to "forward" in world
+  // space with those Eulers. Also 14° was too dramatic.
+  //
+  // New model: reaction force pushes the rifle back and slightly up,
+  // plus a tiny pitch up. All three overlay the baked base transform.
+  //
+  //   backKick  = 0.04 world units (adds to tz — positive tz is back
+  //               under the user's calibration; -0.1 was "forward"
+  //               out of the chest).
+  //   upKick    = 0.008 world units (~8 mm on ty).
+  //   pitchKick = 0.05 rad (~3° on rx).
+  //
+  // Decay time constant ~50 ms → ~150 ms to <5% amplitude.
+  if (e.isMixamo && e.rifle && e._kickT !== undefined) {
+    if (e._kickT > 0.001) {
+      e._kickT *= Math.exp(-dt * 20);
+      const k = e._kickT;
+      const inv = e.rifleInvScale || 1;
+      e.rifle.position.set(
+        (_RIFLE_BASE_POS.x + _rifleDbg.tx + 0)          * inv,
+        (_RIFLE_BASE_POS.y + _rifleDbg.ty + 0.008 * k)  * inv,
+        (_RIFLE_BASE_POS.z + _rifleDbg.tz + 0.04  * k)  * inv);
+      e.rifle.rotation.set(
+        _rifleDbg.rx * Math.PI + 0.05 * k,
+        _rifleDbg.ry * Math.PI,
+        _rifleDbg.rz * Math.PI);
+      e._kickWasActive = true;
+    } else if (e._kickWasActive) {
+      // Snap back to base one last time so subsequent live keyboard
+      // tuning owns the transform cleanly.
+      e._kickT = 0;
+      e._kickWasActive = false;
+      _rifleDbgApply();
     }
   }
 
