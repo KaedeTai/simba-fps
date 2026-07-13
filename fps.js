@@ -1007,9 +1007,14 @@ function update(dt) {
   if (mouseDown && weapon.auto) tryShoot();
 
   // Movement — combine keyboard and touch joystick into forward/strafe scalars.
-  // Backward speed is 0.5x forward (tactical realism); sprint only boosts
-  // pure forward movement (fwd > 0), not backpedal or pure strafe.
+  // Speed penalties (tactical FPS convention, post-normalization):
+  //   * backward (fwd < 0):        0.5x — 'S' / 'S+A' / 'S+D'
+  //   * pure strafe (fwd === 0, strafe !== 0): 0.7x — 'A' / 'D' alone
+  //   * forward-dominant (fwd > 0): 1.0x — 'W' / 'W+A' / 'W+D' stay full
+  // Backward takes priority over strafe when both apply (S+A is 0.5x, not 0.7x).
+  // Sprint (Shift) only boosts forward-dominant movement.
   const BACKWARD_MULT = 0.5;
+  const STRAFE_MULT   = 0.7;
   const sprinting = keys["ShiftLeft"] || keys["ShiftRight"] || touchSprint;
   const cos = Math.cos(player.dir), sin = Math.sin(player.dir);
   let fwd = 0, strafe = 0;
@@ -1018,18 +1023,18 @@ function update(dt) {
   if (keys["KeyD"]) strafe += 1;
   if (keys["KeyA"]) strafe -= 1;
   if (stick.id !== null) { fwd += -stick.dy; strafe += stick.dx; }   // joystick: up = forward
-  // Sprint gate: only when net forward input is positive (holding W /
-  // pushing stick forward). Pure strafe (A/D) and backpedal (S) use
-  // base speed even if Shift is held.
+  // Sprint gate: only when net forward input is positive.
   const spd = ((sprinting && fwd > 0) ? player.sprint : player.speed) * dt;
   let mvx = cos * fwd - sin * strafe;
   let mvy = sin * fwd + cos * strafe;
   const mlen = Math.hypot(mvx, mvy);
   if (mlen > 0) {
     mvx = mvx / mlen * spd; mvy = mvy / mlen * spd;
-    // Backward penalty applied after normalization so W+D matches W speed
-    // but S / S+A / S+D take the 0.5x hit on the whole vector.
-    if (fwd < 0) { mvx *= BACKWARD_MULT; mvy *= BACKWARD_MULT; }
+    // Directional speed mult — priority: backward > pure-strafe > forward.
+    let mult = 1.0;
+    if (fwd < 0)                          mult = BACKWARD_MULT;
+    else if (fwd === 0 && strafe !== 0)   mult = STRAFE_MULT;
+    if (mult !== 1.0) { mvx *= mult; mvy *= mult; }
     const buf = 0.18;
     if (!isWall(player.x + mvx + Math.sign(mvx) * buf, player.y)) player.x += mvx;
     if (!isWall(player.x, player.y + mvy + Math.sign(mvy) * buf)) player.y += mvy;
