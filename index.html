@@ -36,6 +36,21 @@
     console.log("[fps] Three.js loaded, revision =", THREE.REVISION);
   }
 </script>
+<!-- === GLTFLoader — for the Mixamo Vanguard teammate ===
+     Same jsdelivr → unpkg CDN chain pattern as three.min.js. examples/js
+     scripts attach to the global THREE namespace so no ES-module boilerplate. -->
+<script src="https://cdn.jsdelivr.net/npm/three@0.160/examples/js/loaders/GLTFLoader.js"></script>
+<script>
+  if (typeof THREE !== "undefined" && !THREE.GLTFLoader) {
+    console.warn("[fps] GLTFLoader jsdelivr failed — trying unpkg…");
+    document.write('<script src="https://unpkg.com/three@0.160.0/examples/js/loaders/GLTFLoader.js"><\/script>');
+  }
+</script>
+<script>
+  if (typeof THREE !== "undefined") {
+    console.log("[fps] GLTFLoader:", THREE.GLTFLoader ? "OK" : "MISSING — teammate falls back to procedural mesh");
+  }
+</script>
 </head>
 <body>
   <canvas id="game"></canvas>

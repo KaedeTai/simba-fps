@@ -2075,7 +2075,124 @@ const world3d = {
   eyeH: 0.5,                     // camera height in world units (mid-wall)
 };
 
-// -------- teammate mesh factory --------
+// =========================================================================
+// === Mixamo Vanguard loader (async, with procedural fallback) ===
+// The teammate uses a rigged Mixamo character with real skeletal animation
+// clips (Idle / Walking / Firing Rifle / Standing Aim Walk Forward /
+// Hit Reaction / Dying). Loading is async — the game starts with the
+// procedural mesh visible (createTeammateMesh below), then swaps to the
+// Mixamo mesh once GLB files decode. If GLTFLoader isn't available or
+// any file fails to load, we stay on the procedural mesh forever.
+//
+// Root motion: Mixamo bakes hip translation into the walk / aim-walk
+// clips. Since our game code drives world position independently, we
+// strip the Hips.position tracks from every clip so animations play in
+// place — no double-translation slide.
+//
+// Scale: Vanguard's default height is ~180 (cm-based). We measure the
+// bounding box and rescale so the character is 0.55 world units tall
+// (head at ~player eye level 0.5, small margin above). Vertical offset
+// aligns feet at world Y = 0 (no more sunken feet from the procedural
+// mesh's hip-centered origin).
+// =========================================================================
+const MIXAMO_BASE = "assets/models/vanguard/";
+const MIXAMO_FILES = {
+  character: "vanguard.glb",
+  Idle:      "Idle.glb",
+  Walking:   "Walking.glb",
+  Firing:    "Firing_Rifle.glb",
+  AimWalk:   "Standing_Aim_Walk_Forward.glb",
+  HitReact:  "Hit_Reaction.glb",
+  Dying:     "Dying.glb",
+};
+
+function _stripRootMotion(clip) {
+  // Remove Hips.position tracks so the character animates in place
+  // instead of drifting. Rotation on Hips is preserved.
+  clip.tracks = clip.tracks.filter(t => !/Hips\.position$/i.test(t.name));
+  return clip;
+}
+
+async function _loadGLB(loader, path) {
+  return new Promise((resolve, reject) => {
+    loader.load(path, resolve, undefined, err => reject(err));
+  });
+}
+
+async function createTeammateFromMixamo() {
+  if (typeof THREE === "undefined" || !THREE.GLTFLoader) {
+    throw new Error("GLTFLoader unavailable");
+  }
+  const loader = new THREE.GLTFLoader();
+  const [charGltf, idle, walk, fire, aimWalk, hit, die] = await Promise.all([
+    _loadGLB(loader, MIXAMO_BASE + MIXAMO_FILES.character),
+    _loadGLB(loader, MIXAMO_BASE + MIXAMO_FILES.Idle),
+    _loadGLB(loader, MIXAMO_BASE + MIXAMO_FILES.Walking),
+    _loadGLB(loader, MIXAMO_BASE + MIXAMO_FILES.Firing),
+    _loadGLB(loader, MIXAMO_BASE + MIXAMO_FILES.AimWalk),
+    _loadGLB(loader, MIXAMO_BASE + MIXAMO_FILES.HitReact),
+    _loadGLB(loader, MIXAMO_BASE + MIXAMO_FILES.Dying),
+  ]);
+
+  const model = charGltf.scene;
+  // Bounding box & scale — target head at ~0.55 world units (slightly above
+  // player eye 0.5 so we're looking at the visor, not the top of the head).
+  const bbox = new THREE.Box3().setFromObject(model);
+  const rawHeight = bbox.max.y - bbox.min.y;
+  const targetHeight = 0.55;
+  const scale = targetHeight / rawHeight;
+  model.scale.setScalar(scale);
+  // Vertical offset so feet touch world Y=0.
+  const feetLocalY = bbox.min.y * scale;
+  model.position.y = -feetLocalY;
+
+  // Wrap in a group so we can rotate / translate cleanly at the outer level.
+  const g = new THREE.Group();
+  g.add(model);
+
+  // Actions
+  const mixer = new THREE.AnimationMixer(model);
+  const actions = {};
+  const clipMap = { Idle: idle, Walking: walk, Firing: fire, AimWalk: aimWalk, HitReact: hit, Dying: die };
+  for (const [name, gltf] of Object.entries(clipMap)) {
+    const clip = gltf.animations && gltf.animations[0];
+    if (!clip) { console.warn("[fps][world3d] no clip in", name, "— skipping"); continue; }
+    clip.name = name;
+    _stripRootMotion(clip);
+    actions[name] = mixer.clipAction(clip);
+  }
+  // Loop policies
+  if (actions.HitReact) { actions.HitReact.setLoop(THREE.LoopOnce, 1); actions.HitReact.clampWhenFinished = true; }
+  if (actions.Dying)    { actions.Dying.setLoop(THREE.LoopOnce, 1);    actions.Dying.clampWhenFinished    = true; }
+  if (actions.Firing)   { actions.Firing.setLoop(THREE.LoopOnce, 1);   actions.Firing.clampWhenFinished   = true; }
+  // Start on Idle
+  if (actions.Idle) actions.Idle.play();
+
+  // Some materials from Mixamo GLB export can look flat/washed-out; give the
+  // model shadow flags so our directional lights pick out silhouette edges.
+  model.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+
+  console.log("[fps][world3d] mixamo load OK", {
+    scale: scale.toFixed(4),
+    raw_height: rawHeight.toFixed(2),
+    target_height: targetHeight,
+    feet_offset: (-feetLocalY).toFixed(4),
+    animations: Object.keys(actions),
+  });
+
+  return {
+    group: g,
+    mixer,
+    actions,
+    current: "Idle",
+    isMixamo: true,
+    // Same tracking fields as procedural mesh so updateTeammate can share code.
+    walkT: 0, prevX: 0, prevY: 0,
+    wasDead: true, aimDir: 0, prevMuzzle: 0,
+  };
+}
+
+// -------- teammate mesh factory (procedural fallback) --------
 // Human-shaped stack of primitives. ~18 meshes. Torso at Y=0.6, head at 1.02;
 // legs pivot at hip (Y=0.32), arms pivot at shoulder (Y=0.86).
 //
@@ -2248,6 +2365,8 @@ function initWorld3d() {
 
     // Build entities up front. Each entity stashes its animation state on
     // its own record so the render loop is a simple for-each dispatch.
+    // Start with the procedural mesh so the game is visible immediately;
+    // kick off the async Mixamo load in the background and swap when ready.
     const teammate = createTeammateMesh();
     scene.add(teammate.group);
     world3d.entities.teammate = teammate;
@@ -2257,29 +2376,69 @@ function initWorld3d() {
       canvas: canvas.width + "x" + canvas.height, three: THREE.REVISION,
       entities: Object.keys(world3d.entities),
     });
+
+    // Async: try to swap teammate to the Mixamo Vanguard mesh. On failure
+    // we stay on the procedural mesh forever — no user-visible error.
+    createTeammateFromMixamo().then(mixamoTeammate => {
+      const cur = world3d.entities.teammate;
+      // Preserve tracking state so the state machine doesn't miss beats
+      // (aimDir snapshot, prev-position, wasDead flag).
+      mixamoTeammate.aimDir     = cur.aimDir;
+      mixamoTeammate.prevMuzzle = cur.prevMuzzle;
+      mixamoTeammate.prevX      = cur.prevX;
+      mixamoTeammate.prevY      = cur.prevY;
+      mixamoTeammate.wasDead    = cur.wasDead;
+      // Swap in the scene graph.
+      scene.remove(cur.group);
+      scene.add(mixamoTeammate.group);
+      world3d.entities.teammate = mixamoTeammate;
+    }).catch(err => {
+      console.warn("[fps][world3d] mixamo load FAILED — staying on procedural mesh:", err);
+    });
   } catch (err) {
     console.warn("[fps][world3d] init failed — falling back to 2D billboards:", err);
     world3d.disabled = true;
   }
 }
 
+// Cross-fade helper for the Mixamo state machine. No-op if the new state
+// is already current or the target clip didn't load.
+function _crossfadeTeammate(e, next, dur = 0.15) {
+  if (!e.isMixamo || !e.actions) return;
+  if (next === e.current) return;
+  const oldAct = e.actions[e.current];
+  const newAct = e.actions[next];
+  if (!newAct) return;
+  if (oldAct) oldAct.fadeOut(dur);
+  newAct.reset().fadeIn(dur).play();
+  e.current = next;
+}
+
 function updateTeammate(dt) {
   const e = world3d.entities.teammate;
   if (!e) return;
 
+  // Mixamo: always tick the animation mixer so poses interpolate between
+  // frames. Skipped for procedural (has no mixer).
+  if (e.isMixamo && e.mixer) e.mixer.update(dt);
+
   // ----- occlusion & death -----
-  // Hide when wall blocks LOS OR when ally has despawned. Death animation
-  // rotates the mesh forward by 90° over ~0.4s and fades opacity to 0 over
-  // the same 2s window the AI uses before the corpse is removed.
+  // Hide when wall blocks LOS OR when ally has despawned. Two animation
+  // strategies: Mixamo plays the Dying clip (loops once, clamps at last
+  // frame); procedural manually rotates the whole model forward by 90°
+  // over ~0.4s. Position + facing logic shared.
   if (ally.dead) {
-    // Roll forward on death — dead body lies flat on the floor.
-    const t = Math.min(1, ally.deadT / 0.4);
-    e.group.rotation.x = t * (Math.PI / 2);
     e.group.position.set(ally.x, 0, ally.y);          // +Z mapping (v2)
     e.group.rotation.y = Math.PI / 2 - ally.dir;      // v3: mesh forward is +Z
-    // Fade to invisible during the deadT window (~2s), then hide entirely.
     e.group.visible = ally.deadT < 2.0;
     e.wasDead = true;                                 // v4: force facing-snap on next revive
+    if (e.isMixamo) {
+      _crossfadeTeammate(e, "Dying", 0.15);
+    } else {
+      // Procedural fallback — rotate the whole model forward.
+      const t = Math.min(1, ally.deadT / 0.4);
+      e.group.rotation.x = t * (Math.PI / 2);
+    }
     return;
   }
   const blocked = wallBetween(player.x, player.y, ally.x, ally.y);
@@ -2296,12 +2455,17 @@ function updateTeammate(dt) {
   // of "movement", the teammate would spin to face the teleport direction.
   // Snap prev-pos to current and set facing from ally.dir once. Reset the
   // aim-snapshot machinery so we don't false-trigger a fire event next tick.
+  // For Mixamo, also stop the Dying action so the next state transition
+  // can play cleanly instead of blending from the clamped last-frame pose.
   if (e.wasDead) {
     e.prevX = ally.x; e.prevY = ally.y;
     e.aimDir = ally.dir;
     e.prevMuzzle = ally.muzzle;
     e.group.rotation.y = Math.PI / 2 - ally.dir;
     e.wasDead = false;
+    if (e.isMixamo && e.actions && e.actions.Dying) {
+      e.actions.Dying.stop();
+    }
   }
 
   // ----- fire rising-edge detection ----------------------------------------
@@ -2352,56 +2516,59 @@ function updateTeammate(dt) {
   }
   // else: preserve last rotation.y (idle, or firing-just-ended)
 
-  // ----- walk cycle -----
-  // Legs and arms swing in counter-phase, driven by a phase accumulator
-  // that speeds up while moving and decays to zero at idle. Amplitudes
-  // increased from v3 (0.45 / 0.20) — the smaller values were technically
-  // correct but too subtle at typical viewing distance.
-  const WALK_LEG_SWING = 0.65;                      // ~37° hip rotation
-  const WALK_ARM_SWING = 0.35;                      // ~20° shoulder rotation
-  const WALK_BOB_AMP   = 0.06;                      // mesh-local; ~3cm world after scale
-  const WALK_BOB_FREQ  = 2.0;                       // 2x step frequency (once per foot plant)
-  if (walking) {
-    e.walkT += dt * 9;                              // ~1.4 Hz cadence at typical ally.speed
-  } else {
-    e.walkT *= Math.max(0, 1 - dt * 6);             // decay so it doesn't freeze mid-swing
-  }
-  const legAmp = walking ? WALK_LEG_SWING : 0.0;
-  const armAmp = walking ? WALK_ARM_SWING : 0.0;
-  const sw = Math.sin(e.walkT);
-  e.legL.rotation.x = +sw * legAmp;
-  e.legR.rotation.x = -sw * legAmp;
-  e.armL.rotation.x = -sw * armAmp;                 // opposite side to matching leg
-  e.armR.rotation.x = +sw * armAmp;
-
-  // ----- upper-body walk bob -----
-  // Torso/head/arms/rifle drop when a foot plants (mid-stance) and rise
-  // when legs cross. Mesh-local units get scaled by TEAMMATE_SCALE (~0.49),
-  // so 0.06 local → 0.03 world (~3 cm). Bob is applied to torsoGroup, NOT
-  // the whole model, so legs stay planted while upper body oscillates.
-  //
-  //   -amp * (1 - cos(walkT*2)) / 2   maps to [-amp, 0]
-  //   walkT = 0        (legs crossed)   -> bob = 0        (high)
-  //   walkT = π/2      (mid-stance)     -> bob = -amp     (LOW)
-  //   walkT = π        (legs crossed)   -> bob = 0        (high)
-  //   walkT = 3π/2     (mid-stance)     -> bob = -amp     (LOW)
-  const walkBobPhase = (1 - Math.cos(e.walkT * WALK_BOB_FREQ)) / 2;   // [0, 1]
-  const walkBob = walking ? -WALK_BOB_AMP * walkBobPhase : 0;
-  const idleBreath = walking ? 0 : Math.sin(world3d.t * 1.5) * 0.010;
-  e.torsoGroup.position.y = walkBob + idleBreath;
-
-  // ----- position (world) — group.position.y stays 0; bob is on torsoGroup ----
+  // ----- position (world) — always Y=0 for Mixamo (mesh's own feet-anchor)
+  // and for procedural (torsoGroup handles bob) --------------------------
   e.group.position.set(ally.x, 0, ally.y);          // +Z mapping (v2)
 
-  // ----- muzzle flash pulse -----
-  // ally.muzzle is set by updateAlly() when it fires; peak 0.12s, decays.
-  const mf = Math.max(0, ally.muzzle / 0.12);
-  e.muzzleFlash.material.opacity = mf;
-  e.muzzleFlash.rotation.z += dt * 30;              // twinkle
-
-  // ----- hurt tint via emissive (100 ms red flash) -----
-  const hurt = Math.max(0, ally.hurt / 0.2);
-  e.chestMat.emissive.setRGB(hurt * 0.7, 0, 0);
+  if (e.isMixamo) {
+    // ---- Mixamo state machine — pick target clip and cross-fade ----
+    // Priority: dying > hurt > firing > walking > idle. Dying is handled
+    // in the ally.dead branch above; we never reach here while dead.
+    let next;
+    if (ally.hurt > 0.05)      next = "HitReact";
+    else if (ally.muzzle > 0)  next = "Firing";
+    else if (walking)          next = "Walking";
+    else                       next = "Idle";
+    // Fallback graceful-degrade: if a specific clip didn't load, pick
+    // whatever we do have that fits the mood.
+    if (!e.actions[next]) {
+      if (walking && e.actions.Idle) next = "Idle";
+      else if (e.actions.Idle)       next = "Idle";
+      else return;                                  // nothing to play
+    }
+    _crossfadeTeammate(e, next, 0.15);
+    // No manual muzzle-flash quad on Mixamo — the Firing clip's arm pose
+    // is the visual signal. A future pass could attach a bone-tracked
+    // additive flash sprite; TODO.
+  } else {
+    // ---- Procedural fallback — hand-driven walk cycle + bob + flash ----
+    const WALK_LEG_SWING = 0.65;                    // ~37° hip rotation
+    const WALK_ARM_SWING = 0.35;                    // ~20° shoulder rotation
+    const WALK_BOB_AMP   = 0.06;                    // mesh-local; ~3cm world after scale
+    const WALK_BOB_FREQ  = 2.0;                     // 2x step frequency
+    if (walking) {
+      e.walkT += dt * 9;
+    } else {
+      e.walkT *= Math.max(0, 1 - dt * 6);
+    }
+    const legAmp = walking ? WALK_LEG_SWING : 0.0;
+    const armAmp = walking ? WALK_ARM_SWING : 0.0;
+    const sw = Math.sin(e.walkT);
+    e.legL.rotation.x = +sw * legAmp;
+    e.legR.rotation.x = -sw * legAmp;
+    e.armL.rotation.x = -sw * armAmp;
+    e.armR.rotation.x = +sw * armAmp;
+    // Upper-body bob: -amp * (1 - cos(walkT*2)) / 2  → [-amp, 0]
+    const walkBobPhase = (1 - Math.cos(e.walkT * WALK_BOB_FREQ)) / 2;
+    const walkBob = walking ? -WALK_BOB_AMP * walkBobPhase : 0;
+    const idleBreath = walking ? 0 : Math.sin(world3d.t * 1.5) * 0.010;
+    e.torsoGroup.position.y = walkBob + idleBreath;
+    // Muzzle flash + hurt tint (only for procedural; Mixamo has clip poses)
+    e.muzzleFlash.material.opacity = Math.max(0, ally.muzzle / 0.12);
+    e.muzzleFlash.rotation.z += dt * 30;
+    const hurt = Math.max(0, ally.hurt / 0.2);
+    e.chestMat.emissive.setRGB(hurt * 0.7, 0, 0);
+  }
 }
 
 function renderWorld3d(dt) {

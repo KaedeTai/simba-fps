@@ -1,0 +1,7 @@
+# FBX source files are kept locally for re-conversion / editing in
+# Blender, but the deployed asset is the .glb variant (converted via
+# `FBX2glTF --binary`, roughly 59% smaller). Regenerate any missing
+# FBX from Mixamo → export FBX (with skin), then re-run FBX2glTF.
+*.fbx
+# Texture caches created by FBX2glTF during conversion — safe to delete.
+*.fbm/
