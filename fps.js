@@ -241,13 +241,13 @@ const weapons = [
   { id: "sniper",  name: "狙擊槍",   ico: "🔭", magSize: 5,  fireRate: 0.80, reloadTime: 1.8,
     damage: 130, range: 28, spread: 0.002, pellets: 1, auto: false, vm: "sniper",  cost: 500,  unlockWave: 5 },
   { id: "autosg",  name: "自動霰彈", ico: "🧨", magSize: 10, fireRate: 0.28, reloadTime: 1.9,
-    damage: 12,  range: 11, spread: 0.300, pellets: 7, auto: true,  vm: "shotgun", cost: 550,  unlockWave: 6 },
+    damage: 12,  range: 11, spread: 0.300, pellets: 7, auto: true,  vm: "autosg",  cost: 550,  unlockWave: 6 },
   { id: "laser",   name: "雷射槍",   ico: "⚡", magSize: 40, fireRate: 0.05, reloadTime: 1.6,
-    damage: 22,  range: 22, spread: 0.006, pellets: 1, auto: true,  vm: "smg",     cost: 700,  unlockWave: 7 },
+    damage: 22,  range: 22, spread: 0.006, pellets: 1, auto: true,  vm: "laser",   cost: 700,  unlockWave: 7 },
   { id: "minigun", name: "機槍",     ico: "🌀", magSize: 80, fireRate: 0.04, reloadTime: 2.6,
-    damage: 15,  range: 16, spread: 0.100, pellets: 1, auto: true,  vm: "smg",     cost: 900,  unlockWave: 8 },
+    damage: 15,  range: 16, spread: 0.100, pellets: 1, auto: true,  vm: "minigun", cost: 900,  unlockWave: 8 },
   { id: "plasma",  name: "電漿炮",   ico: "☄️", magSize: 20, fireRate: 0.22, reloadTime: 1.9,
-    damage: 75,  range: 20, spread: 0.020, pellets: 1, auto: true,  vm: "rifle",   cost: 1400, unlockWave: 10 },
+    damage: 75,  range: 20, spread: 0.020, pellets: 1, auto: true,  vm: "plasma",  cost: 1400, unlockWave: 10 },
 ].map(w => ({ ...w, mag: w.magSize, cooldown: 0, reloading: false, reloadT: 0, recoil: 0 }));
 let curWep = 0;
 let weapon = weapons[curWep];
@@ -1717,6 +1717,11 @@ const WEAPON_3D = {
   // Sniper: slightly further back at hip (heavier feel), aim pose centres
   // the scope tube on the crosshair, hard zoom (30° FOV) on ADS.
   sniper:  { hipPos: [ 0.35, -0.44, -0.78 ], aimPos: [ 0.00, -0.05, -0.40 ], recoilScale: 1.50, adsFov: 30 },
+  // Tier-2 weapons (previously aliased to other vm ids):
+  autosg:  { hipPos: [ 0.35, -0.44, -0.72 ], aimPos: [ 0.00, -0.20, -0.60 ], recoilScale: 1.40 },
+  laser:   { hipPos: [ 0.32, -0.42, -0.62 ], aimPos: [ 0.00, -0.17, -0.55 ], recoilScale: 0.50 },
+  minigun: { hipPos: [ 0.36, -0.44, -0.68 ], aimPos: [ 0.00, -0.20, -0.60 ], recoilScale: 0.40 },
+  plasma:  { hipPos: [ 0.36, -0.46, -0.75 ], aimPos: [ 0.00, -0.19, -0.60 ], recoilScale: 2.00 },
 };
 
 const w3d = {
@@ -2029,6 +2034,220 @@ function createSmgMesh() {
   return g;
 }
 
+// -------------------- AUTO SHOTGUN (Saiga-12 vibe, drum mag) --------------------
+// Fat matte-black barrel, big drum magazine under the receiver, folded stock.
+// Louder than the pump, faster than pump — recoilScale 1.4 (< pump's 1.8).
+function createAutoShotgunMesh() {
+  const g = new THREE.Group();
+  const steel  = _mat(0x2a2c30, 0.55, 0.55);
+  const grip   = _mat(0x1a1c1f, 0.15, 0.85);
+  const dark   = _mat(0x22252a, 0.55, 0.50);
+  const collar = _mat(0x1a1c1f, 0.65, 0.45);
+
+  // Barrel — thicker than the manual shotgun but shorter
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.30, 14), steel);
+  barrel.rotation.x = Math.PI / 2; barrel.position.set(0, 0.048, -0.14); g.add(barrel);
+  const muzzle = new THREE.Mesh(new THREE.CylinderGeometry(0.031, 0.031, 0.024, 14), collar);
+  muzzle.rotation.x = Math.PI / 2; muzzle.position.set(0, 0.048, -0.30); g.add(muzzle);
+
+  // Compact receiver
+  const receiver = new THREE.Mesh(new THREE.BoxGeometry(0.060, 0.080, 0.16), steel);
+  receiver.position.set(0, 0.028, 0.02); g.add(receiver);
+
+  // Drum magazine — cylinder rotated onto side, hanging below receiver
+  const drum = new THREE.Mesh(new THREE.CylinderGeometry(0.058, 0.058, 0.050, 20), dark);
+  drum.rotation.z = Math.PI / 2; drum.position.set(0, -0.045, 0.02); g.add(drum);
+  const drumCap = new THREE.Mesh(new THREE.CylinderGeometry(0.062, 0.062, 0.006, 20), collar);
+  drumCap.rotation.z = Math.PI / 2; drumCap.position.set(0.028, -0.045, 0.02); g.add(drumCap);
+
+  // Thin folding stock arm (single tube), matches SMG style
+  const stock = new THREE.Mesh(new THREE.BoxGeometry(0.014, 0.030, 0.13), steel);
+  stock.position.set(0, 0.048, 0.14); g.add(stock);
+  const stockPad = new THREE.Mesh(new THREE.BoxGeometry(0.042, 0.052, 0.014), collar);
+  stockPad.position.set(0, 0.040, 0.21); g.add(stockPad);
+
+  // Grip + guard
+  const gripMesh = new THREE.Mesh(new THREE.BoxGeometry(0.044, 0.095, 0.05), grip);
+  gripMesh.position.set(0, -0.020, 0.10); gripMesh.rotation.x = -0.36; g.add(gripMesh);
+  const guard = new THREE.Mesh(
+    new THREE.TorusGeometry(0.022, 0.006, 8, 22, Math.PI * 1.2), dark);
+  guard.rotation.y = Math.PI / 2; guard.rotation.z = -Math.PI * 0.42;
+  guard.position.set(0, -0.010, 0.05); g.add(guard);
+
+  // Wide muzzle flash (still a shotgun, still a boomstick)
+  const flash = _makeMuzzleFlash(0.24);
+  flash.position.set(0, 0.048, -0.32); g.add(flash);
+  g.userData.flash = flash;
+  return g;
+}
+
+// -------------------- LASER RIFLE (sci-fi, cyan emissive focus ring) -----------
+// Deep blue chassis + cyan glowing focus ring at the muzzle + shark-fin
+// heatsinks along the receiver. No physical magazine — energy weapon.
+function createLaserMesh() {
+  const g = new THREE.Group();
+  const chassis  = _mat(0x1a2540, 0.55, 0.45);      // deep blue
+  const dark     = _mat(0x0d1220, 0.55, 0.50);
+  const grip     = _mat(0x181828, 0.15, 0.85);
+  // Emissive materials for the "energy" bits
+  const focusMat = new THREE.MeshStandardMaterial({
+    color: 0x40cfff, roughness: 0.30, metalness: 0.20,
+    emissive: 0x40cfff, emissiveIntensity: 0.9,
+  });
+  const emitterMat = new THREE.MeshStandardMaterial({
+    color: 0x80e8ff, roughness: 0.25,
+    emissive: 0x80e8ff, emissiveIntensity: 1.4,
+  });
+
+  // Smooth barrel — cylinder
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.020, 0.020, 0.35, 16), chassis);
+  barrel.rotation.x = Math.PI / 2; barrel.position.set(0, 0.040, -0.16); g.add(barrel);
+  // Focus ring — wider cylinder glowing cyan
+  const focus = new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.026, 0.030, 16), focusMat);
+  focus.rotation.x = Math.PI / 2; focus.position.set(0, 0.040, -0.32); g.add(focus);
+  // Emitter tip — small bright sphere at the very front
+  const emitter = new THREE.Mesh(new THREE.SphereGeometry(0.019, 12, 10), emitterMat);
+  emitter.position.set(0, 0.040, -0.340); g.add(emitter);
+
+  // Streamlined receiver
+  const receiver = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.070, 0.20), chassis);
+  receiver.position.set(0, 0.030, 0.02); g.add(receiver);
+  // Heatsink fins — three thin boxes along the top of the receiver
+  const finY = 0.070;
+  for (let i = 0; i < 3; i++) {
+    const fin = new THREE.Mesh(new THREE.BoxGeometry(0.048, 0.010, 0.028), dark);
+    fin.position.set(0, finY, -0.04 + i * 0.045); g.add(fin);
+  }
+  // Second row of fins slightly higher for silhouette texture
+  for (let i = 0; i < 3; i++) {
+    const fin = new THREE.Mesh(new THREE.BoxGeometry(0.038, 0.014, 0.024), dark);
+    fin.position.set(0, finY + 0.014, -0.04 + i * 0.045); g.add(fin);
+  }
+
+  // Grip + guard
+  const gripMesh = new THREE.Mesh(new THREE.BoxGeometry(0.042, 0.090, 0.05), grip);
+  gripMesh.position.set(0, -0.030, 0.11); gripMesh.rotation.x = -0.40; g.add(gripMesh);
+  const guard = new THREE.Mesh(
+    new THREE.TorusGeometry(0.022, 0.006, 8, 20, Math.PI * 1.2), dark);
+  guard.rotation.y = Math.PI / 2; guard.rotation.z = -Math.PI * 0.42;
+  guard.position.set(0, -0.012, 0.08); g.add(guard);
+
+  // Sights are just tiny visible blips — clean sci-fi
+  const frontSight = new THREE.Mesh(new THREE.BoxGeometry(0.006, 0.010, 0.010), dark);
+  frontSight.position.set(0, 0.075, -0.18); g.add(frontSight);
+  const rearSight = new THREE.Mesh(new THREE.BoxGeometry(0.020, 0.008, 0.012), dark);
+  rearSight.position.set(0, 0.075, 0.06); g.add(rearSight);
+
+  // Cyan-tinted muzzle flash (kept in the yellow-white family via the
+  // material factory to avoid over-saturating on additive blend, but
+  // scaled small to match the crisp laser feel)
+  const flash = _makeMuzzleFlash(0.16);
+  flash.position.set(0, 0.040, -0.36); g.add(flash);
+  g.userData.flash = flash;
+  // Stash the emissive parts so a future fire-response can pulse them.
+  g.userData.emissive = [focusMat, emitterMat];
+  return g;
+}
+
+// -------------------- MINIGUN (6-barrel rotating cluster) ----------------------
+// Bulky receiver, thick grip, no stock. Barrel cluster spins in render.
+function createMinigunMesh() {
+  const g = new THREE.Group();
+  const steel  = _mat(0x35393f, 0.60, 0.50);
+  const grip   = _mat(0x1a1c1f, 0.15, 0.85);
+  const dark   = _mat(0x22252a, 0.55, 0.50);
+  const collar = _mat(0x1a1c1f, 0.65, 0.45);
+
+  // Barrel cluster — 6 cylinders arranged around Z axis. Grouped so the
+  // render loop can spin the whole cluster via userData.barrelCluster.rotation.z.
+  const cluster = new THREE.Group();
+  const nBarrels = 6, radius = 0.030;
+  for (let i = 0; i < nBarrels; i++) {
+    const th = (i / nBarrels) * Math.PI * 2;
+    const bx = Math.cos(th) * radius, by = Math.sin(th) * radius;
+    const b = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.32, 10), dark);
+    b.rotation.x = Math.PI / 2; b.position.set(bx, by, 0);
+    cluster.add(b);
+  }
+  // Front hub + rear hub to bind the barrels visually
+  const hubF = new THREE.Mesh(new THREE.CylinderGeometry(0.042, 0.042, 0.012, 16), collar);
+  hubF.rotation.x = Math.PI / 2; hubF.position.set(0, 0, -0.164); cluster.add(hubF);
+  const hubR = new THREE.Mesh(new THREE.CylinderGeometry(0.044, 0.044, 0.020, 16), steel);
+  hubR.rotation.x = Math.PI / 2; hubR.position.set(0, 0, 0.164); cluster.add(hubR);
+  cluster.position.set(0, 0.040, -0.16);
+  g.add(cluster);
+  g.userData.barrelCluster = cluster;
+
+  // Big receiver housing the ammo drum
+  const receiver = new THREE.Mesh(new THREE.BoxGeometry(0.075, 0.090, 0.22), steel);
+  receiver.position.set(0, 0.030, 0.06); g.add(receiver);
+  // Side ammo belt hint — a fat box sticking out sideways
+  const belt = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.055, 0.11), dark);
+  belt.position.set(-0.055, 0.020, 0.10); g.add(belt);
+
+  // Thick grip
+  const gripMesh = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.100, 0.06), grip);
+  gripMesh.position.set(0, -0.035, 0.16); gripMesh.rotation.x = -0.30; g.add(gripMesh);
+
+  const flash = _makeMuzzleFlash(0.20);
+  flash.position.set(0, 0.040, -0.34); g.add(flash);
+  g.userData.flash = flash;
+  return g;
+}
+
+// -------------------- PLASMA CANNON (heavy energy weapon) ---------------------
+// Fat barrel with a glowing plasma orb at the muzzle, exposed energy core in
+// the receiver, side vent fins. Recoil is the heaviest of any weapon.
+function createPlasmaMesh() {
+  const g = new THREE.Group();
+  const chassis  = _mat(0x22252a, 0.60, 0.45);
+  const dark     = _mat(0x0f1114, 0.55, 0.50);
+  const grip     = _mat(0x181820, 0.15, 0.85);
+  const orbMat = new THREE.MeshStandardMaterial({
+    color: 0xff60d0, roughness: 0.30, emissive: 0xff40cf, emissiveIntensity: 1.4,
+  });
+  const coreMat = new THREE.MeshStandardMaterial({
+    color: 0xff90e0, roughness: 0.25, emissive: 0xff30cf, emissiveIntensity: 1.0,
+  });
+
+  // Fat barrel
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.28, 16), chassis);
+  barrel.rotation.x = Math.PI / 2; barrel.position.set(0, 0.045, -0.14); g.add(barrel);
+  // Plasma orb at the muzzle — glowing pink sphere
+  const orb = new THREE.Mesh(new THREE.SphereGeometry(0.055, 16, 12), orbMat);
+  orb.position.set(0, 0.045, -0.30); g.add(orb);
+
+  // Big receiver
+  const receiver = new THREE.Mesh(new THREE.BoxGeometry(0.075, 0.090, 0.22), chassis);
+  receiver.position.set(0, 0.032, 0.04); g.add(receiver);
+  // Exposed energy core — a thin cylinder visible through a cutout window
+  const core = new THREE.Mesh(new THREE.CylinderGeometry(0.020, 0.020, 0.15, 16), coreMat);
+  core.rotation.x = Math.PI / 2; core.position.set(0, 0.050, 0.05); g.add(core);
+
+  // Side vent fins — 4 thin boxes protruding sideways
+  for (let side of [-1, 1]) {
+    for (let i = 0; i < 4; i++) {
+      const fin = new THREE.Mesh(new THREE.BoxGeometry(0.010, 0.050, 0.028), dark);
+      fin.position.set(side * 0.045, 0.030, -0.04 + i * 0.035); g.add(fin);
+    }
+  }
+
+  // Grip + short stock
+  const gripMesh = new THREE.Mesh(new THREE.BoxGeometry(0.044, 0.100, 0.055), grip);
+  gripMesh.position.set(0, -0.035, 0.16); gripMesh.rotation.x = -0.38; g.add(gripMesh);
+  const stock = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.055, 0.10), dark);
+  stock.position.set(0, 0.015, 0.23); g.add(stock);
+  const stockPad = new THREE.Mesh(new THREE.BoxGeometry(0.050, 0.070, 0.018), dark);
+  stockPad.position.set(0, 0.005, 0.29); g.add(stockPad);
+
+  // Very large flash for the heavy energy discharge
+  const flash = _makeMuzzleFlash(0.32);
+  flash.position.set(0, 0.045, -0.36); g.add(flash);
+  g.userData.flash = flash;
+  g.userData.emissive = [orbMat, coreMat];
+  return g;
+}
+
 function init3dWeapons() {
   if (w3d.ready || w3d.disabled) return;
   if (typeof THREE === "undefined") {
@@ -2060,13 +2279,17 @@ function init3dWeapons() {
     const keyL = new THREE.DirectionalLight(0xfff2c8, 0.9);   keyL.position.set(2, 3, 2);   scene.add(keyL);
     const rimL = new THREE.DirectionalLight(0x9ac0ff, 0.35);  rimL.position.set(-3, 1, -2); scene.add(rimL);
 
-    // Build all five weapon meshes up front, add to scene, hide until equipped.
+    // Build all nine weapon meshes up front, add to scene, hide until equipped.
     // Cheap enough to keep them all resident — a few dozen primitives each.
     w3d.meshes.pistol  = createPistolMesh();
     w3d.meshes.smg     = createSmgMesh();
     w3d.meshes.shotgun = createShotgunMesh();
     w3d.meshes.rifle   = createRifleMesh();
     w3d.meshes.sniper  = createSniperMesh();
+    w3d.meshes.autosg  = createAutoShotgunMesh();
+    w3d.meshes.laser   = createLaserMesh();
+    w3d.meshes.minigun = createMinigunMesh();
+    w3d.meshes.plasma  = createPlasmaMesh();
     for (const key of Object.keys(w3d.meshes)) {
       w3d.meshes[key].visible = false;
       scene.add(w3d.meshes[key]);
@@ -2169,6 +2392,23 @@ function render3dWeapon(dt) {
   flash.material.opacity = Math.max(0, mf);
   flash.rotation.z += dt * 40;                                     // twinkle
   flash.scale.setScalar(0.7 + mf * 0.9);
+
+  // ----- minigun barrel spin — the cluster stashed on userData spins when
+  // firing (muzzle flash timer active) and coasts down to a stop otherwise.
+  if (mesh.userData.barrelCluster) {
+    const spinAccel = mf > 0.05 ? 40 : -8;                         // rad/s^2
+    mesh.userData.barrelSpin = (mesh.userData.barrelSpin || 0) + spinAccel * dt;
+    if (mesh.userData.barrelSpin < 0) mesh.userData.barrelSpin = 0;
+    if (mesh.userData.barrelSpin > 22) mesh.userData.barrelSpin = 22;
+    mesh.userData.barrelCluster.rotation.z += mesh.userData.barrelSpin * dt;
+  }
+  // ----- energy weapon pulse — laser/plasma glow brighter during firing -----
+  if (mesh.userData.emissive) {
+    const pulse = 0.7 + mf * 1.2;
+    for (const m of mesh.userData.emissive) {
+      m.emissiveIntensity = pulse;
+    }
+  }
 
   w3d.renderer.render(w3d.scene, w3d.camera);
   if (_dbg3d.firstFrame) {
@@ -2559,12 +2799,23 @@ async function createTeammateFromMixamo() {
     console.log("[fps][world3d] rightHand world position:", handWorldPos.toArray().map(v => v.toFixed(3)));
     // Rifle geometry was built at world-unit sizes (0.36 barrel etc.).
     // Attaching as a bone-child multiplies vertices by handScale, so we
-    // pre-scale by 1/handScale to end up back at world size.
-    rifle.scale.setScalar(invScale);
+    // pre-scale by 1/handScale to end up back at world size — then knock
+    // that world size down to ~0.5 so the rifle isn't cartoonishly huge
+    // in the teammate's grip. User feedback: the previous 1.0-world-unit
+    // rifle looked bigger than the teammate's whole torso; 0.5 puts the
+    // barrel-to-grip span at ~0.35 world units which reads as a compact
+    // carbine on a 0.55-unit-tall figure.
+    const RIFLE_WORLD_SCALE = 0.5;
+    rifle.scale.setScalar(invScale * RIFLE_WORLD_SCALE);
     // Bone-local axis mapping (typical Mixamo hand): fingers extend along
     // +X, palm faces -Y. Rifle's built-forward is +Z, so rotate -π/2
-    // around Y to align the barrel with the fingers.
-    rifle.rotation.set(0, -Math.PI / 2, 0);
+    // around Y to align the barrel with the fingers. User reported the
+    // rifle was upside-down (barrel low, sights on the bottom), so we
+    // additionally flip by π around X — the axis that swaps top/bottom
+    // AFTER the Y-yaw applies. If this ends up rotating the barrel
+    // sideways instead of top-to-bottom, try Math.PI on the Z axis
+    // (the roll around the barrel's own long axis after Y-yaw).
+    rifle.rotation.set(Math.PI, -Math.PI / 2, 0);
     // World-space offset we WANT: rifle grip ~5 cm forward of palm, 2 cm
     // down (into fist). Bone-local coords get multiplied by handScale to
     // become world, so multiply by invScale here.
@@ -2573,9 +2824,16 @@ async function createTeammateFromMixamo() {
     // One-shot world-position log after add so we can see where it landed.
     rifle.updateMatrixWorld(true);
     const riflePos = new THREE.Vector3().setFromMatrixPosition(rifle.matrixWorld);
+    // Also log the world-space bounding box so we can eyeball if the rifle
+    // is a plausible size relative to the teammate figure (should be
+    // ~0.3-0.5 units on its longest axis for a 0.55-tall Vanguard).
+    const rifleBBox = new THREE.Box3().setFromObject(rifle);
+    const rifleSize = new THREE.Vector3();
+    rifleBBox.getSize(rifleSize);
     console.log("[fps][world3d] rifle attached to", rightHand.name,
       "→ world pos", riflePos.toArray().map(v => v.toFixed(3)),
-      "invScale", invScale.toFixed(3));
+      "invScale", invScale.toFixed(3),
+      "world size", rifleSize.toArray().map(v => v.toFixed(3)));
   } else {
     console.warn("[fps][world3d] no RightHand bone found on Vanguard — rifle NOT attached. Available bones (first 20):", allBones.slice(0, 20));
   }
