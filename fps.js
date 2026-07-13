@@ -2107,9 +2107,26 @@ const MIXAMO_FILES = {
 };
 
 function _stripRootMotion(clip) {
-  // Remove Hips.position tracks so the character animates in place
-  // instead of drifting. Rotation on Hips is preserved.
-  clip.tracks = clip.tracks.filter(t => !/Hips\.position$/i.test(t.name));
+  // Remove Hips.position tracks so the character animates in place instead
+  // of drifting, AND remove Hips.quaternion / .rotation tracks so the clip
+  // doesn't fight our own rotation.y writes on the outer Group. Log
+  // analysis showed the Idle clip was pulling rotation back to bind-pose
+  // (~0 rad) between our lerp writes, which is why the teammate wouldn't
+  // face the player when backpedaling — the Mixamo rig kept snapping
+  // Hips back to identity every frame the Idle action was blending in.
+  //
+  // Side effect to watch for: pelvis sway during walk cycle (natural
+  // side-to-side hip rock) will disappear because that's on Hips too.
+  // If the walk starts to look mechanical, we could per-axis strip
+  // (keep pitch/roll, drop yaw) but that's messier since AnimationClip
+  // tracks are quaternion 4-vecs not Euler axes. Ship the simple version
+  // first; iterate only if user reports mechanical hips.
+  clip.tracks = clip.tracks.filter(t => {
+    const n = t.name || "";
+    if (/Hips\.position$/i.test(n))                 return false;
+    if (/Hips\.(quaternion|rotation)$/i.test(n))    return false;
+    return true;
+  });
   return clip;
 }
 
@@ -2614,20 +2631,22 @@ function updateTeammate(dt) {
   e.prevMuzzle = ally.muzzle;
 
   // ----- position + walking detection --------------------------------------
-  // Velocity-averaged + hysteresis. Single-frame dx=dy=0 from AI stalls
-  // (blocked path, target check, etc.) used to flip walking → false for
-  // one frame, then true → State machine crossfaded every ~200ms and
-  // the "start of new walking session" snap re-fired constantly. Now:
-  //   1. Buffer last 8 frames of |velocity| and use the mean.
+  // Velocity-averaged + hysteresis. Previous version used an 8-frame
+  // buffer (~130 ms @ 60 fps) which was long enough to smooth per-frame
+  // dx=0 stalls but NOT long enough for the "AI stops briefly to re-check
+  // target" pauses — user's log showed vAvg=0.0000 flipping the state
+  // machine Walking→Idle every ~500 ms. Bumped to 30 frames (~500 ms
+  // window) which spans those pauses.
+  //
+  //   1. Buffer last 30 frames of |velocity| and use the mean.
   //   2. Two thresholds — need vAvg > 0.010 to ENTER walking, and only
-  //      drop back to Idle when vAvg < 0.003. This asymmetric hysteresis
-  //      matches the "hard to start moving, easy to keep moving, sticky
-  //      to stopping" feel typical of tactical AI.
+  //      drop back to Idle when vAvg < 0.003. Asymmetric hysteresis:
+  //      "hard to start moving, easy to keep moving, sticky to stopping".
   const dx = ally.x - e.prevX, dy = ally.y - e.prevY;
   const vNow = Math.hypot(dx, dy);
   e.velBuf = e.velBuf || [];
   e.velBuf.push(vNow);
-  if (e.velBuf.length > 8) e.velBuf.shift();
+  if (e.velBuf.length > 30) e.velBuf.shift();
   const vAvg = e.velBuf.reduce((a, b) => a + b, 0) / e.velBuf.length;
   const enterT = 0.010, exitT = 0.003;
   const walking = e.wasWalking ? (vAvg > exitT) : (vAvg > enterT);
