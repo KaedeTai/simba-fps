@@ -2221,18 +2221,39 @@ async function createTeammateFromMixamo() {
       // Clamp reflectivity so it doesn't render mirror-black without an env map.
       if (m.metalness !== undefined && m.metalness > 0.15) m.metalness = 0.0;
       if (m.roughness !== undefined && m.roughness < 0.7)  m.roughness = 0.85;
-      // sRGB tag the color textures.
-      if (THREE.SRGBColorSpace !== undefined) {
-        if (m.map)         m.map.colorSpace         = THREE.SRGBColorSpace;
-        if (m.emissiveMap) m.emissiveMap.colorSpace = THREE.SRGBColorSpace;
-      }
+      // r128↔r160 texture-format compat: r160 WebGLRenderer refuses to
+      // upload sRGB textures that aren't RGBAFormat+UnsignedByteType, and
+      // r128 GLTFLoader leaves these fields as undefined / 0. The GPU
+      // then rejects the texture with INVALID_ENUM (0x0000) and the
+      // texture sampler returns black — the exact 'no camo pattern'
+      // symptom the user observed. Force valid values for every texture
+      // slot on the material; base-color and emissive get sRGB tag, data
+      // maps stay linear.
+      const _COLOR_KEYS  = ["map", "emissiveMap"];
+      const _LINEAR_KEYS = ["normalMap", "roughnessMap", "metalnessMap", "aoMap"];
+      const _fixTex = (tex, isColor) => {
+        if (!tex) return;
+        if (THREE.RGBAFormat !== undefined && (!tex.format || tex.format === 0)) {
+          tex.format = THREE.RGBAFormat;
+        }
+        if (THREE.UnsignedByteType !== undefined && (!tex.type || tex.type === 0)) {
+          tex.type = THREE.UnsignedByteType;
+        }
+        if (isColor && THREE.SRGBColorSpace !== undefined) {
+          tex.colorSpace = THREE.SRGBColorSpace;
+        } else if (!isColor && THREE.LinearSRGBColorSpace !== undefined) {
+          tex.colorSpace = THREE.LinearSRGBColorSpace;
+        }
+        tex.needsUpdate = true;
+      };
+      for (const k of _COLOR_KEYS)  _fixTex(m[k], true);
+      for (const k of _LINEAR_KEYS) _fixTex(m[k], false);
       // Force base color to white so texture isn't tinted grey. Some
       // fbx2gltf exports set m.color to a mid-grey which multiplies with
       // texture output and washes the pattern out — this override is safe
       // because the base-color TEXTURE carries the intended tinting.
       if (m.map && m.color) m.color.setHex(0xffffff);
       m.needsUpdate = true;
-      if (m.map) m.map.needsUpdate = true;
     }
   });
   console.log("[fps][world3d] mixamo materials DIAGNOSTIC", mixamoMatDebug);
@@ -2501,7 +2522,10 @@ function _crossfadeTeammate(e, next, dur = 0.15) {
   if (!newAct) return;
   if (oldAct) oldAct.fadeOut(dur);
   newAct.reset().fadeIn(dur).play();
-  console.log("[fps][world3d] anim state:", e.current, "->", next);
+  const _vDbg = typeof e.velBuf !== "undefined" && e.velBuf.length
+    ? (e.velBuf.reduce((a, b) => a + b, 0) / e.velBuf.length).toFixed(4)
+    : "n/a";
+  console.log("[fps][world3d] anim state:", e.current, "->", next, "vAvg=" + _vDbg);
   e.current = next;
   e.stateHoldT = _ANIM_HOLD_MS / 1000;                // arm the hold timer
 }
