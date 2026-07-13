@@ -2007,16 +2007,22 @@ function updateWeaponLayerVisibility() {
 // whose meshes represent in-world entities. Batch 1 = the AI teammate.
 // Later batches will move enemies (grunt/elite) and the boss over.
 //
-// Coordinate mapping (crucial to get right):
+// Coordinate mapping (crucial to get right — v2 after fix):
 //   raycaster grid X  ->  Three.js X       (both go "right")
-//   raycaster grid Y  ->  Three.js -Z      (raycaster Y increases into
-//                                            the map; Three.js Z runs
-//                                            OUT of the screen, so we flip)
+//   raycaster grid Y  ->  Three.js +Z      (SAME sign — earlier version
+//                                            used -Z and turned out to
+//                                            reverse the horizontal
+//                                            handedness, so when the
+//                                            player rotated in place
+//                                            the teammate slid relative
+//                                            to the walls. Verified by
+//                                            comparing camera-right vs
+//                                            raycaster screenX for a
+//                                            fixed-ally / dir+=0.1 case.)
 //   height (up)       ->  Three.js Y
 //
-// Ally facing formula (derived): rotation.y = ally.dir - PI/2. For dir=0
-// (east / +X in grid) the rifle points to +X world, which is right on
-// screen when the camera is facing forward. Verified for all four cardinals.
+// Ally facing formula (re-derived for the +Z mapping): rotation.y =
+// -ally.dir - PI/2. Verified for all four cardinals.
 //
 // Occlusion: we call the existing wallBetween() helper to hide the teammate
 // when a wall is between them and the player — the raycaster's z-buffer
@@ -2146,6 +2152,15 @@ function createTeammateMesh() {
   muzzleFlash.position.z += 0.28;                    // in front of barrel tip
   g.add(muzzleFlash);
 
+  // ---- height scale ---------------------------------------------------
+  // First pass built the mesh at ~0.95 units head-height (feet-to-head).
+  // User feedback: too tall — should be ~0.66. Scale factor 0.66/0.95 ≈ 0.695.
+  // Uniform scale keeps proportions identical (head/helmet/patch all shrink
+  // together). group.position is not affected — the mesh centers on
+  // whatever (x, 0, y) the update loop writes. If feet start looking like
+  // they're sinking into the floor, we can bump group.position.y up by
+  // (feet_offset * scale) — hold off until we see the visual.
+  g.scale.setScalar(0.66 / 0.95);
   return {
     group: g,
     armL, armR, legL, legR,
@@ -2210,8 +2225,8 @@ function updateTeammate(dt) {
     // Roll forward on death — dead body lies flat on the floor.
     const t = Math.min(1, ally.deadT / 0.4);
     e.group.rotation.x = t * (Math.PI / 2);
-    e.group.position.set(ally.x, 0, -ally.y);
-    e.group.rotation.y = ally.dir - Math.PI / 2;
+    e.group.position.set(ally.x, 0, ally.y);          // +Z mapping (v2)
+    e.group.rotation.y = -ally.dir - Math.PI / 2;     // re-derived for +Z mapping
     // Fade to invisible during the deadT window (~2s), then hide entirely.
     e.group.visible = ally.deadT < 2.0;
     return;
@@ -2229,7 +2244,7 @@ function updateTeammate(dt) {
   e.prevX = ally.x; e.prevY = ally.y;
 
   e.group.rotation.x = 0;                           // clear death rotation if revived
-  e.group.rotation.y = ally.dir - Math.PI / 2;      // face where the AI is looking
+  e.group.rotation.y = -ally.dir - Math.PI / 2;     // face where the AI is looking (v2 mapping)
   e.group.rotation.z = 0;
 
   // ----- walk cycle -----
@@ -2250,7 +2265,7 @@ function updateTeammate(dt) {
 
   // ----- idle breathing (small vertical bob) -----
   const breath = Math.sin(world3d.t * 1.5) * (walking ? 0.002 : 0.006);
-  e.group.position.set(ally.x, breath, -ally.y);
+  e.group.position.set(ally.x, breath, ally.y);      // +Z mapping (v2)
 
   // ----- muzzle flash pulse -----
   // ally.muzzle is set by updateAlly() when it fires; peak 0.12s, decays.
@@ -2269,10 +2284,13 @@ function renderWorld3d(dt) {
   world3d.t += dt;
 
   // ----- sync camera to player -----
-  // Flip grid Y -> -Three.js Z so screen handedness matches the raycaster
-  // (grid +Y is on the RIGHT of the raycaster's screen; in Three.js that's -Z).
+  // Use SAME sign for grid Y -> Three.js Z. Verified: for player at (2,2),
+  // ally at (4,2), dir += 0.1, both raycaster (via screenX < W/2) and
+  // Three.js (via dot(ally_dir, camera_right) < 0) put the ally to the
+  // LEFT of the screen. With the previous -Z mapping they disagreed and
+  // the teammate slid relative to the walls when the player only rotated.
   const cam = world3d.camera;
-  cam.position.set(player.x, world3d.eyeH, -player.y);
+  cam.position.set(player.x, world3d.eyeH, player.y);
   // Convert player.pitch (px offset of the horizon) to an equivalent camera
   // pitch in radians. The raycaster clamps pitch to ±H*0.6; using a
   // proportional map to the vertical FOV keeps horizon lines aligned.
@@ -2280,7 +2298,7 @@ function renderWorld3d(dt) {
   const pitchRad = (player.pitch / H) * vFovRad;
   const targetX = player.x + Math.cos(player.dir) * Math.cos(pitchRad);
   const targetY = world3d.eyeH + Math.sin(pitchRad);
-  const targetZ = -player.y - Math.sin(player.dir) * Math.cos(pitchRad);
+  const targetZ = player.y + Math.sin(player.dir) * Math.cos(pitchRad);
   cam.lookAt(targetX, targetY, targetZ);
 
   // ----- per-entity updates (batch 1: just the teammate) -----
