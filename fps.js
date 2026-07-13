@@ -43,28 +43,41 @@ console.log("[fps][world3d] mode:", USE_3D_WORLD ? "3D" : "2.5D",
 // P prints current values to console. Reapplies to the attached rifle in
 // real time via world3d.entities.teammate.rifle.
 function _readRifleDbg() {
-  // Defaults baked from user's live-tuning session against the Basic
-  // Shooter Pack Idle pose. (-π/2, 0, -π/2) lines the muzzle up along
-  // the teammate's forward direction with the grip pointed down. URL
-  // query still overrides so future poses can be re-tuned without a
-  // code change.
+  // Rotation defaults baked from user's live-tuning session against the
+  // Basic Shooter Pack Idle pose. Position defaults nudged forward on Z
+  // by -0.1 world units (rifle was clipping into the teammate's chest
+  // under the new Idle pose). URL query still overrides both so future
+  // poses can be re-tuned without a code change.
   let rx = -0.5, ry = 0, rz = -0.5;
+  let tx = 0, ty = 0, tz = -0.1;
   try {
     const u = new URLSearchParams(location.search);
     if (u.has("rifleRX")) rx = parseFloat(u.get("rifleRX"));
     if (u.has("rifleRY")) ry = parseFloat(u.get("rifleRY"));
     if (u.has("rifleRZ")) rz = parseFloat(u.get("rifleRZ"));
+    if (u.has("rifleTX")) tx = parseFloat(u.get("rifleTX"));
+    if (u.has("rifleTY")) ty = parseFloat(u.get("rifleTY"));
+    if (u.has("rifleTZ")) tz = parseFloat(u.get("rifleTZ"));
   } catch (e) {}
-  return { rx, ry, rz };
+  return { rx, ry, rz, tx, ty, tz };
 }
 const _rifleDbg = _readRifleDbg();
 console.log("[fps][rifleDbg] init from URL:", _rifleDbg);
+// Position baseline in world units — the historical rifle offset applied
+// on top of the debug delta. Position under the bone gets multiplied by
+// invScale (stashed on the teammate entity) to convert world → bone-local.
+const _RIFLE_BASE_POS = { x: 0.05, y: -0.02, z: 0.02 };
 function _rifleDbgApply() {
   if (typeof world3d === "undefined") return;
   const e = world3d && world3d.entities && world3d.entities.teammate;
   if (!e || !e.rifle) return;
   e.rifle.rotation.set(
     _rifleDbg.rx * Math.PI, _rifleDbg.ry * Math.PI, _rifleDbg.rz * Math.PI);
+  const inv = e.rifleInvScale || 1;
+  e.rifle.position.set(
+    (_RIFLE_BASE_POS.x + _rifleDbg.tx) * inv,
+    (_RIFLE_BASE_POS.y + _rifleDbg.ty) * inv,
+    (_RIFLE_BASE_POS.z + _rifleDbg.tz) * inv);
 }
 function _rifleDbgUpdateHud() {
   let hud = document.getElementById("rifleDbg");
@@ -74,11 +87,13 @@ function _rifleDbgUpdateHud() {
     hud.style.cssText = "position:fixed;left:12px;bottom:12px;z-index:9;" +
       "font:11px 'SF Mono',Menlo,monospace;color:#7dffd0;" +
       "background:rgba(0,0,0,.55);padding:5px 8px;border-radius:4px;" +
-      "pointer-events:none;letter-spacing:1px";
+      "pointer-events:none;letter-spacing:1px;line-height:1.5";
     document.body.appendChild(hud);
   }
-  const fmt = v => v.toFixed(2);
-  hud.textContent = `rifle: X=${fmt(_rifleDbg.rx)}π  Y=${fmt(_rifleDbg.ry)}π  Z=${fmt(_rifleDbg.rz)}π   [/] ;/'  ,/.  P=log`;
+  const f2 = v => v.toFixed(2);
+  hud.innerHTML =
+    `rifle R: X=${f2(_rifleDbg.rx)}π  Y=${f2(_rifleDbg.ry)}π  Z=${f2(_rifleDbg.rz)}π  <span style="opacity:.6">[/] ;/' ,/.</span><br>` +
+    `rifle T: X=${f2(_rifleDbg.tx)}   Y=${f2(_rifleDbg.ty)}   Z=${f2(_rifleDbg.tz)}   <span style="opacity:.6">-/= Bksp/\\ N/M  P=log</span>`;
 }
 
 function toggleWorld3dMode() {
@@ -648,6 +663,7 @@ addEventListener("keydown", e => {
   // KeyP dumps current values so the user can paste them into a URL or
   // report them back for a defaults commit.
   const RSTEP = 0.05;                                    // step in units of π
+  const TSTEP = 0.02;                                    // step in world units (finer than rotation)
   let touched = false;
   if      (e.code === "BracketLeft")  { _rifleDbg.rx -= RSTEP; touched = true; }
   else if (e.code === "BracketRight") { _rifleDbg.rx += RSTEP; touched = true; }
@@ -655,11 +671,22 @@ addEventListener("keydown", e => {
   else if (e.code === "Quote")        { _rifleDbg.ry += RSTEP; touched = true; }
   else if (e.code === "Comma")        { _rifleDbg.rz -= RSTEP; touched = true; }
   else if (e.code === "Period")       { _rifleDbg.rz += RSTEP; touched = true; }
+  // Position tuning (world units).
+  else if (e.code === "Minus")        { _rifleDbg.tx -= TSTEP; touched = true; }
+  else if (e.code === "Equal")        { _rifleDbg.tx += TSTEP; touched = true; }
+  else if (e.code === "Backspace")    { _rifleDbg.ty -= TSTEP; touched = true; }
+  else if (e.code === "Backslash")    { _rifleDbg.ty += TSTEP; touched = true; }
+  // (Digit9 would conflict with the weapon-slot switch, so use KeyN/KeyM
+  // for the Z-axis position tuning instead.)
+  else if (e.code === "KeyN")         { _rifleDbg.tz -= TSTEP; touched = true; }
+  else if (e.code === "KeyM")         { _rifleDbg.tz += TSTEP; touched = true; }
   else if (e.code === "KeyP")         {
     console.log("[fps][rifleDbg]",
-      `X=${_rifleDbg.rx.toFixed(3)}π Y=${_rifleDbg.ry.toFixed(3)}π Z=${_rifleDbg.rz.toFixed(3)}π`,
+      `R=(${_rifleDbg.rx.toFixed(3)}π, ${_rifleDbg.ry.toFixed(3)}π, ${_rifleDbg.rz.toFixed(3)}π)`,
+      `T=(${_rifleDbg.tx.toFixed(3)}, ${_rifleDbg.ty.toFixed(3)}, ${_rifleDbg.tz.toFixed(3)})`,
       "→ URL:",
-      `?rifleRX=${_rifleDbg.rx.toFixed(3)}&rifleRY=${_rifleDbg.ry.toFixed(3)}&rifleRZ=${_rifleDbg.rz.toFixed(3)}`);
+      `?rifleRX=${_rifleDbg.rx.toFixed(3)}&rifleRY=${_rifleDbg.ry.toFixed(3)}&rifleRZ=${_rifleDbg.rz.toFixed(3)}` +
+      `&rifleTX=${_rifleDbg.tx.toFixed(3)}&rifleTY=${_rifleDbg.ty.toFixed(3)}&rifleTZ=${_rifleDbg.tz.toFixed(3)}`);
   }
   if (touched) {
     _rifleDbgApply();
@@ -3016,6 +3043,7 @@ async function createTeammateFromMixamo() {
 
   let rightHand = null;
   let rifle = null;                            // hoisted so the returned entity can hold a ref for periodic orientation diagnostics
+  let rifleInvScale = 1;                       // hoisted so live re-apply of debug position can multiply bone-local coords
   const allBones = [];
   model.traverse(o => {
     if (o.isBone || o.type === "Bone") allBones.push(o.name);
@@ -3038,6 +3066,7 @@ async function createTeammateFromMixamo() {
     // Guard against a zero-scale (shouldn't happen but Three.js would divide-by-zero).
     const sx = Math.max(1e-6, handScale.x);
     const invScale = 1 / sx;
+    rifleInvScale = invScale;                        // stash for live debug re-apply
     console.log("[fps][world3d] rightHand world scale:", handScale.toArray().map(v => v.toFixed(4)));
     console.log("[fps][world3d] rightHand world position:", handWorldPos.toArray().map(v => v.toFixed(3)));
     // Rifle geometry was built at world-unit sizes (0.36 barrel etc.).
@@ -3063,10 +3092,13 @@ async function createTeammateFromMixamo() {
     //      Keys: [/] adjust X, ;/' adjust Y, ,/. adjust Z (0.05π step).
     //      P prints current values to console so they can be copied back.
     rifle.rotation.set(_rifleDbg.rx * Math.PI, _rifleDbg.ry * Math.PI, _rifleDbg.rz * Math.PI);
-    // World-space offset we WANT: rifle grip ~5 cm forward of palm, 2 cm
-    // down (into fist). Bone-local coords get multiplied by handScale to
-    // become world, so multiply by invScale here.
-    rifle.position.set(0.05 * invScale, -0.02 * invScale, 0.02 * invScale);
+    // World-space offset baseline (_RIFLE_BASE_POS = 0.05, -0.02, 0.02)
+    // plus the debug delta (_rifleDbg.tx/ty/tz). Bone-local coords get
+    // multiplied by handScale to become world, so multiply by invScale.
+    rifle.position.set(
+      (_RIFLE_BASE_POS.x + _rifleDbg.tx) * invScale,
+      (_RIFLE_BASE_POS.y + _rifleDbg.ty) * invScale,
+      (_RIFLE_BASE_POS.z + _rifleDbg.tz) * invScale);
     rightHand.add(rifle);
     // One-shot world-position log after add so we can see where it landed.
     rifle.updateMatrixWorld(true);
@@ -3099,12 +3131,13 @@ async function createTeammateFromMixamo() {
     actions,
     current: "Idle",
     isMixamo: true,
-    // References for the periodic rifle-orientation diagnostic in
-    // updateTeammate — captured here so we don't have to walk the bone
-    // tree every frame. rifle is null if we couldn't find the hand bone.
+    // References for the live rifle-orientation tuning. rifle is null if
+    // we couldn't find the hand bone. rifleInvScale is the 1/handScale we
+    // multiplied bone-local coords by; _rifleDbgApply reuses it when
+    // re-applying the position offset live.
     rifle,
     rightHand,
-    _diagCounter: 0,
+    rifleInvScale,
     // Same tracking fields as procedural mesh so updateTeammate can share code.
     walkT: 0, prevX: 0, prevY: 0,
     wasDead: true, aimDir: 0, prevMuzzle: 0,
