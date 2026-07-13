@@ -2808,15 +2808,13 @@ async function createTeammateFromMixamo() {
     const RIFLE_WORLD_SCALE = 0.5;
     rifle.scale.setScalar(invScale * RIFLE_WORLD_SCALE);
     // Bone-local axis mapping (typical Mixamo hand): fingers extend along
-    // +X, palm faces -Y. Rifle's built-forward is +Z, so rotate -π/2
-    // around Y to align the barrel with the fingers. Previous attempt to
-    // use X-axis π to fix the vertical inversion did NOT fix it (user
-    // still saw the rifle upside-down). Because Three.js applies Euler
-    // rotations XYZ-order, the X π was consumed by the subsequent Y-yaw
-    // in a way that only re-oriented the barrel side-to-side, not
-    // top-to-bottom. Try Z-axis π instead — roll around the barrel's
-    // own forward axis AFTER yaw, which is exactly the top/bottom swap.
-    rifle.rotation.set(0, -Math.PI / 2, Math.PI);
+    // +X, palm faces -Y. Rifle's built-forward is +Z. User re-diagnosed:
+    // the previous complaint of "still vertically inverted" was actually
+    // MUZZLE POINTING BACKWARDS (grip forward of fist, barrel toward the
+    // teammate's body). That's not a roll or a top/bottom flip — it's a
+    // 180° YAW error. So flip the Y rotation from -π/2 to +π/2 (the
+    // opposite hemisphere of forward) and drop the earlier Z-axis π.
+    rifle.rotation.set(0, Math.PI / 2, 0);
     // Temporary diagnostic — an AxesHelper glued to the rifle so the user
     // can screenshot and confirm which world-axis the barrel actually
     // points along. Red = X, Green = Y, Blue = Z. Remove once orientation
