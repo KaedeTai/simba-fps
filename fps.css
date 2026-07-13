@@ -3,7 +3,9 @@
     touch-action: none; -webkit-user-select: none; user-select: none; overscroll-behavior: none; }
   #game { display: block; width: 100vw; height: 100vh; cursor: none; background: #000; touch-action: none; }
 
-  #hud { position: fixed; inset: 0; pointer-events: none;
+  /* z-index bumped to 4 so score / wave / kills / coins / health / weapon slots
+     paint above the (now-opaque) #world3d canvas from Phase 2. */
+  #hud { position: fixed; inset: 0; pointer-events: none; z-index: 4;
     color: #e8e8e8; text-shadow: 0 0 4px #000, 0 0 8px #000; user-select: none; }
   #crosshair { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); width: 26px; height: 26px; }
   #crosshair::before, #crosshair::after { content: ""; position: absolute;
@@ -35,11 +37,15 @@
   #allyhp-wrap { width: 130px; height: 9px; border: 1px solid rgba(77,208,255,.5); background: rgba(0,0,0,.4); }
   #allyhp { height: 100%; width: 100%; background: linear-gradient(90deg,#4dd0ff,#7dffd0); transition: width .15s; }
 
+  /* z-index bumped to 4 so the muzzle flash / damage vignette overlays
+     land above the opaque #world3d canvas from Phase 2. */
   #flash { position: fixed; inset: 0; pointer-events: none; opacity: 0; transition: opacity .05s;
+    z-index: 4;
     background: radial-gradient(circle at 50% 62%, rgba(255,220,120,.9), rgba(255,150,40,0) 45%); }
   /* Damage vignette: a radial-gradient background (painted once) whose opacity we animate.
      The old inset box-shadow re-blurred the whole viewport every frame and tanked FPS. */
   #hurt  { position: fixed; inset: 0; pointer-events: none; opacity: 0;
+    z-index: 4;
     will-change: opacity; transform: translateZ(0);
     background: radial-gradient(ellipse at center,
       rgba(255,0,0,0) 42%, rgba(200,0,0,.35) 78%, rgba(150,0,0,.72) 100%); }
@@ -57,7 +63,9 @@
                      width: 5px; height: 5px; border-radius: 50%;
                      box-shadow: 0 0 6px #000, 0 0 4px rgba(0,0,0,.9); }
   /* === /3D pistol prototype === */
-  #minimap { position: fixed; top: 14px; right: 14px; border: 2px solid rgba(255,255,255,.3); background: rgba(0,0,0,.5); }
+  /* z-index bumped to 4 so the minimap paints above the opaque #world3d canvas (Phase 2). */
+  #minimap { position: fixed; top: 14px; right: 14px; z-index: 4;
+             border: 2px solid rgba(255,255,255,.3); background: rgba(0,0,0,.5); }
 
   .screen { position: fixed; inset: 0; display: flex; flex-direction: column;
     align-items: center; justify-content: center; text-align: center;
