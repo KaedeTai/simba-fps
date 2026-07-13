@@ -2184,6 +2184,8 @@ function createTeammateMesh() {
     walkT: 0,                                        // walk cycle phase
     prevX: 0, prevY: 0,                              // previous world pos for speed detection
     wasDead: true,                                   // treats first frame as revive so facing snaps once
+    aimDir: 0,                                       // snapshot of ally.dir taken on each fire event
+    prevMuzzle: 0,                                   // to detect fire rising edge (muzzle went up this frame)
   };
 }
 
@@ -2260,12 +2262,29 @@ function updateTeammate(dt) {
   // On the transition dead -> alive the ally teleports to a spawn tile near
   // the player. If we let the movement-detector see that as a frame's worth
   // of "movement", the teammate would spin to face the teleport direction.
-  // Snap prev-pos to current and set facing from ally.dir once.
+  // Snap prev-pos to current and set facing from ally.dir once. Reset the
+  // aim-snapshot machinery so we don't false-trigger a fire event next tick.
   if (e.wasDead) {
     e.prevX = ally.x; e.prevY = ally.y;
+    e.aimDir = ally.dir;
+    e.prevMuzzle = ally.muzzle;
     e.group.rotation.y = Math.PI / 2 - ally.dir;
     e.wasDead = false;
   }
+
+  // ----- fire rising-edge detection ----------------------------------------
+  // updateAlly() peaks ally.muzzle to 0.12 whenever it fires (a real target
+  // is guaranteed alive at that moment — see the `if (target && ally.fireCd
+  // <= 0)` guard). Snapshot the AI's aim direction at that exact instant so
+  // subsequent frames use the SNAPSHOT rather than the live ally.dir. This
+  // fixes the "target dies mid-muzzle-flash and teammate spins to face the
+  // player" bug — the AI immediately switches ally.dir to face the player
+  // once no target is visible, and if we followed ally.dir live we'd see
+  // that spin during the flash decay.
+  if (ally.muzzle > e.prevMuzzle) {
+    e.aimDir = ally.dir;
+  }
+  e.prevMuzzle = ally.muzzle;
 
   // ----- position + walking detection --------------------------------------
   const dx = ally.x - e.prevX, dy = ally.y - e.prevY;
@@ -2274,22 +2293,16 @@ function updateTeammate(dt) {
   e.prevX = ally.x; e.prevY = ally.y;
 
   // ----- facing: only update when firing or walking; idle preserves last frame
-  // Root cause of the "always staring at player" bug: the AI writes
-  // ally.dir every frame to face the player when there's no target enemy
-  // (see updateAlly() — "aim at the target, else look toward the player").
-  // The render used to blindly apply ally.dir, so the teammate always
-  // snapped back to face the player between actions. Now the render owns
-  // the visual facing: it uses movement velocity when walking (tactical
-  // soldier faces where they're going) and ally.dir only during the muzzle-
-  // flash window (they're actively aiming). When neither, rotation.y is
-  // left untouched — teammate holds the direction they last had.
+  // Same rationale as the previous fix (idle no longer stares at player) —
+  // now with the fire branch using the aim SNAPSHOT so the target-dies-mid-
+  // flash edge case also preserves.
   if (ally.muzzle > 0) {
-    e.group.rotation.y = Math.PI / 2 - ally.dir;
+    e.group.rotation.y = Math.PI / 2 - e.aimDir;      // snapshot, not live ally.dir
   } else if (walking) {
     const moveDir = Math.atan2(dy, dx);
     e.group.rotation.y = Math.PI / 2 - moveDir;
   }
-  // else: preserve last rotation.y (idle)
+  // else: preserve last rotation.y (idle, or firing-just-ended)
 
   // ----- walk cycle -----
   // Legs and arms swing in counter-phase, driven by a phase accumulator
