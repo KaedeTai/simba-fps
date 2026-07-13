@@ -2543,21 +2543,39 @@ async function createTeammateFromMixamo() {
   });
   if (rightHand) {
     const rifle = _buildAllyRifle();
-    // Mixamo hand local axes (typical): fingers extend along +X, palm faces
-    // -Y (down toward wrist), thumb toward +Z. Rifle's forward is +Z. To
-    // point the barrel along the fingers (out of the palm), rotate the
-    // rifle -π/2 around Y so its local +Z aligns with the hand's +X.
-    // Position it slightly forward of the palm and rotate the grip to
-    // sit in the hand.
-    // Scale accounts for the outer group.scale (~0.0031) — bones are in
-    // model-local coords which are also affected by the outer scale.
-    // Building the rifle in model-scale means the outer scale shrinks it
-    // properly; sizes above are in model-scale (~1.7 m tall), so the
-    // rifle geometry is in "world-ish" size.
+    // Measure the hand bone's actual world scale so we can counter-scale
+    // the rifle. Previous naive numeric guesses (6, -3, 4) put the rifle
+    // in the sky because the bone chain's cumulative world scale wasn't
+    // the 0.003 I assumed — Mixamo skeletons carry intermediate scale
+    // nodes that vary per export.
+    rightHand.updateMatrixWorld(true);
+    const handScale = new THREE.Vector3();
+    rightHand.getWorldScale(handScale);
+    const handWorldPos = new THREE.Vector3().setFromMatrixPosition(rightHand.matrixWorld);
+    // Guard against a zero-scale (shouldn't happen but Three.js would divide-by-zero).
+    const sx = Math.max(1e-6, handScale.x);
+    const invScale = 1 / sx;
+    console.log("[fps][world3d] rightHand world scale:", handScale.toArray().map(v => v.toFixed(4)));
+    console.log("[fps][world3d] rightHand world position:", handWorldPos.toArray().map(v => v.toFixed(3)));
+    // Rifle geometry was built at world-unit sizes (0.36 barrel etc.).
+    // Attaching as a bone-child multiplies vertices by handScale, so we
+    // pre-scale by 1/handScale to end up back at world size.
+    rifle.scale.setScalar(invScale);
+    // Bone-local axis mapping (typical Mixamo hand): fingers extend along
+    // +X, palm faces -Y. Rifle's built-forward is +Z, so rotate -π/2
+    // around Y to align the barrel with the fingers.
     rifle.rotation.set(0, -Math.PI / 2, 0);
-    rifle.position.set(6, -3, 4);              // model-local units before outer scale
+    // World-space offset we WANT: rifle grip ~5 cm forward of palm, 2 cm
+    // down (into fist). Bone-local coords get multiplied by handScale to
+    // become world, so multiply by invScale here.
+    rifle.position.set(0.05 * invScale, -0.02 * invScale, 0.02 * invScale);
     rightHand.add(rifle);
-    console.log("[fps][world3d] rifle attached to", rightHand.name);
+    // One-shot world-position log after add so we can see where it landed.
+    rifle.updateMatrixWorld(true);
+    const riflePos = new THREE.Vector3().setFromMatrixPosition(rifle.matrixWorld);
+    console.log("[fps][world3d] rifle attached to", rightHand.name,
+      "→ world pos", riflePos.toArray().map(v => v.toFixed(3)),
+      "invScale", invScale.toFixed(3));
   } else {
     console.warn("[fps][world3d] no RightHand bone found on Vanguard — rifle NOT attached. Available bones (first 20):", allBones.slice(0, 20));
   }
