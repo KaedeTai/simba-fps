@@ -510,6 +510,10 @@ function startWave() {
 addEventListener("keydown", e => {
   keys[e.code] = true;
   if (e.code === "KeyR") reload();
+  // F2: toggle 2.5D <-> 3D world mode. Persists via localStorage +
+  // reloads. saveRun's beforeunload hook preserves the current run so
+  // the mode change is seamless.
+  if (e.code === "F2") { e.preventDefault(); toggleWorld3dMode(); return; }
   const dm = e.code.match(/^Digit([1-9])$/);
   if (dm) switchWeapon(+dm[1] - 1);
   if (e.code === "KeyQ") cycleWeapon(-1);
@@ -682,6 +686,9 @@ function applyProfileToStartUI() {
   loadProfile(last);
   applyProfileToStartUI();
   $("touchtoggle").checked = touchMode;   // auto-detected default
+  // Reflect the current world3d pref in the start-screen checkbox.
+  const w3dToggle = document.getElementById("world3dToggle");
+  if (w3dToggle) w3dToggle.checked = USE_3D_WORLD;
 })();
 $("acct").addEventListener("change", () => { loadProfile($("acct").value); applyProfileToStartUI(); });
 $("acct").addEventListener("keydown", e => { if (e.key === "Enter") $("acct").blur(); });
@@ -690,8 +697,33 @@ $("allytoggle").addEventListener("change", () => {
   profile.useAlly = useAlly; saveProfile();
 });
 $("touchtoggle").addEventListener("change", () => { touchMode = $("touchtoggle").checked; });
+// Start-screen 3D toggle: writes localStorage; the value is picked up on
+// the next page load. On a fresh install the checkbox reflects the pref
+// we read on module init (default true).
+const _w3dToggleEl = document.getElementById("world3dToggle");
+if (_w3dToggleEl) {
+  _w3dToggleEl.addEventListener("change", () => {
+    const val = _w3dToggleEl.checked;
+    try { localStorage.setItem(WORLD3D_PREF_KEY, String(val)); } catch (e) {}
+    console.log("[fps][world3d] start-screen pref:", val ? "3D" : "2.5D", "— applies on next Start / reload");
+  });
+}
+// Pause-menu 3D toggle: matches the F2 keyboard shortcut behaviour.
+const _btn3d = document.getElementById("toggle3dBtn");
+if (_btn3d) _btn3d.addEventListener("click", () => toggleWorld3dMode());
 
 function startGame() {
+  // If the start-screen 3D toggle changed since page load, reload so
+  // world3d init picks up the new mode. The pref was already written
+  // to localStorage by the checkbox handler.
+  const uiPref = document.getElementById("world3dToggle")?.checked;
+  if (uiPref !== undefined && uiPref !== USE_3D_WORLD) {
+    console.log("[fps][world3d] start-screen pref change → reload");
+    // Don't clearRun here — we WANT the current save to be restored
+    // if any (or not, depending on prior state). Just reload.
+    location.reload();
+    return;
+  }
   // === persistence: explicit new game — nuke any auto-resume blob ===
   clearRun();
   loadProfile($("acct") ? $("acct").value : profileName);   // (re)load the chosen profile
@@ -2133,7 +2165,43 @@ const ENABLE_3D_ENTITIES = true;
 //   Phase 5:              polish + retire the raycaster module.
 // HUD (weapon viewmodel, minimap, health bar, shop, save/load) is
 // untouched by any phase — pure DOM overlays. Save schema unchanged.
-const USE_3D_WORLD = true;
+//
+// Toggle sources (priority: URL > localStorage > default):
+//   ?mode=2d / ?mode=3d       URL query param (session, e.g. bug repro)
+//   localStorage 'simbafps:pref:world3d'   persistent user pref
+//   default = true (3D)
+//
+// User inputs three ways:
+//   Desktop: F2 keydown → toggle + reload
+//   Any:     start-screen checkbox "3D 世界" → saves pref, applies on Start
+//   Any:     pause-menu "切換 2.5D / 3D 模式" button → toggle + reload
+const WORLD3D_PREF_KEY = "simbafps:pref:world3d";
+function _readWorld3dPref() {
+  try {
+    const params = new URLSearchParams(location.search);
+    const modeParam = params.get("mode");
+    if (modeParam === "2d") return false;
+    if (modeParam === "3d") return true;
+    const stored = localStorage.getItem(WORLD3D_PREF_KEY);
+    if (stored === "false") return false;
+    if (stored === "true")  return true;
+  } catch (e) {}
+  return true;                                     // default: 3D
+}
+let USE_3D_WORLD = _readWorld3dPref();
+console.log("[fps][world3d] mode:", USE_3D_WORLD ? "3D" : "2.5D",
+  "(source: URL/localStorage/default)");
+
+// Toggle handler shared by keyboard (F2) and pause-menu button.
+// Persists the pref and reloads — beforeunload's saveRun preserves the
+// current run so the reload's tryAutoResume drops the player back into
+// the same session with the new mode active.
+function toggleWorld3dMode() {
+  const next = !USE_3D_WORLD;
+  try { localStorage.setItem(WORLD3D_PREF_KEY, String(next)); } catch (e) {}
+  console.log("[fps][world3d] toggling to", next ? "3D" : "2.5D", "— reloading");
+  location.reload();
+}
 
 const world3d = {
   canvas: null, scene: null, camera: null, renderer: null,

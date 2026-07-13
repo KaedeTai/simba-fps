@@ -125,6 +125,7 @@
       <input id="acct" type="text" maxlength="16" placeholder="輸入名稱" autocomplete="off">
       <label class="toggle"><input id="allytoggle" type="checkbox" checked> 使用 AI 隊友</label>
       <label class="toggle"><input id="touchtoggle" type="checkbox"> 觸控控制（平板）</label>
+      <label class="toggle"><input id="world3dToggle" type="checkbox" checked> 3D 世界（關閉 = 2.5D）</label>
     </div>
     <div id="profstats"></div>
     <div style="margin:6px 0 2px;font-size:13px;opacity:.75">選擇地圖：</div>
@@ -143,6 +144,10 @@
     <h1>已暫停</h1>
     <p>點擊畫面繼續遊戲</p>
     <button class="btn" id="resumeBtn">繼續</button>
+    <!-- === 3D toggle: works via mouse click on desktop, tap on tablet === -->
+    <button class="btn" id="toggle3dBtn" style="margin-top:14px;background:#4dd0ff;color:#013a5a;box-shadow:0 0 22px rgba(77,208,255,.35);font-size:16px;padding:10px 32px;letter-spacing:2px">
+      切換 2.5D / 3D 模式（F2）
+    </button>
     <!-- === persistence: reset button clears the auto-resume save === -->
     <div style="margin-top:32px;opacity:.55;font-size:12px;letter-spacing:2px">危險區域</div>
     <button class="btn btn-warn" id="resetBtn">重置遊戲（清除存檔）</button>
