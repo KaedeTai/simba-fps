@@ -100,6 +100,28 @@
   <div id="flash"></div>
   <div id="hurt"></div>
 
+  <!-- === sniper scope overlay: shown only when sniper is equipped + right-mouse held === -->
+  <div id="scopeOverlay" class="hidden">
+    <svg class="scope-reticle" viewBox="0 0 200 200" preserveAspectRatio="xMidYMid meet">
+      <!-- 4-post crosshair -->
+      <line x1="100" y1="20"  x2="100" y2="82"  stroke="#000" stroke-width="1.2"/>
+      <line x1="100" y1="118" x2="100" y2="180" stroke="#000" stroke-width="1.2"/>
+      <line x1="20"  y1="100" x2="82"  y2="100" stroke="#000" stroke-width="1.2"/>
+      <line x1="118" y1="100" x2="180" y2="100" stroke="#000" stroke-width="1.2"/>
+      <!-- center dot -->
+      <circle cx="100" cy="100" r="1.2" fill="#000"/>
+      <!-- mil-dot ladder on vertical + horizontal -->
+      <g fill="#000">
+        <circle cx="100" cy="70"  r="1.5"/> <circle cx="100" cy="130" r="1.5"/>
+        <circle cx="100" cy="50"  r="1.5"/> <circle cx="100" cy="150" r="1.5"/>
+        <circle cx="100" cy="30"  r="1.5"/> <circle cx="100" cy="170" r="1.5"/>
+        <circle cx="70"  cy="100" r="1.5"/> <circle cx="130" cy="100" r="1.5"/>
+        <circle cx="50"  cy="100" r="1.5"/> <circle cx="150" cy="100" r="1.5"/>
+        <circle cx="30"  cy="100" r="1.5"/> <circle cx="170" cy="100" r="1.5"/>
+      </g>
+    </svg>
+  </div>
+
   <!-- Touch controls (tablet / phone) -->
   <div id="touchui">
     <div class="touchbtn" id="btnFire">射擊</div>

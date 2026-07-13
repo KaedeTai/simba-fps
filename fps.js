@@ -579,11 +579,20 @@ addEventListener("wheel", e => {
   if (!running || paused || gameOver || shopOpen) return;
   cycleWeapon(e.deltaY > 0 ? 1 : -1);
 }, { passive: true });
+// Scope mode helper — active when sniper is equipped and right mouse held.
+// Reads globals declared elsewhere (aiming3d, weapon), so must NOT be
+// called before those exist; used only after startup.
+function _isScoped() {
+  return typeof aiming3d !== "undefined" && aiming3d
+      && typeof weapon !== "undefined" && weapon && weapon.id === "sniper";
+}
 document.addEventListener("mousemove", e => {
   if (document.pointerLockElement === screen && !paused) {
-    player.dir += e.movementX * 0.0022;
+    // Sniper scope drops sensitivity dramatically so fine aim is possible.
+    const sensMult = _isScoped() ? 0.35 : 1;
+    player.dir += e.movementX * 0.0022 * sensMult;
     // vertical look: shift the horizon (moving mouse up looks up)
-    player.pitch -= e.movementY * 1.3;
+    player.pitch -= e.movementY * 1.3 * sensMult;
     const lim = H * 0.6;
     player.pitch = Math.max(-lim, Math.min(lim, player.pitch));
   }
@@ -1135,7 +1144,10 @@ function update(dt) {
   else if (isBack && !isStrafe) { mult = BACKWARD_MULT; allowSprint = false; }  // pure S
   else if (isBack &&  isStrafe) { mult = STRAFE_MULT;   allowSprint = false; }  // S+A / S+D (strafe wins over backward)
   else if (             isStrafe) { mult = STRAFE_MULT; allowSprint = false; }  // pure A / D
-  const spd = ((sprinting && allowSprint) ? player.sprint : player.speed) * dt;
+  // Sniper scope walk penalty — locks you to a slow crouch-crawl while
+  // aiming so the reticle isn't yanked around at running speed.
+  const scopedFactor = _isScoped() ? 0.4 : 1;
+  const spd = ((sprinting && allowSprint) ? player.sprint : player.speed) * dt * scopedFactor;
   let mvx = cos * fwd - sin * strafe;
   let mvy = sin * fwd + cos * strafe;
   const mlen = Math.hypot(mvx, mvy);
@@ -3336,6 +3348,26 @@ function renderWorld3d(dt) {
   // ----- per-entity updates (batch 1: just the teammate) -----
   updateTeammate(dt);
   if (USE_3D_WORLD) _syncEnemyMeshes(dt);           // Phase 2: enemies as 3D humanoids
+
+  // ----- sniper scope: world FOV zoom + overlay + body class -----------
+  // Base horizontal FOV = FOV (Math.PI/3 = 60°). Scoped horizontal FOV = 20°.
+  // We lerp the camera's VERTICAL FOV so silhouettes align with the aspect.
+  const scoped = _isScoped();
+  if (world3d.baseVFov === undefined) world3d.baseVFov = cam.fov;
+  const aspect = cam.aspect;
+  const targetHFov = scoped ? 20 : (FOV * 180 / Math.PI);   // horizontal deg
+  const targetVFov = 2 * Math.atan(Math.tan(targetHFov * Math.PI / 360) / aspect) * 180 / Math.PI;
+  cam.fov += (targetVFov - cam.fov) * Math.min(1, dt * 12);
+  cam.updateProjectionMatrix();
+
+  // Sync the DOM overlay + body class. Toggle only on change to avoid
+  // hitting the layout engine every frame.
+  if (world3d._prevScoped !== scoped) {
+    world3d._prevScoped = scoped;
+    document.body.classList.toggle("scope-active", scoped);
+    const ov = document.getElementById("scopeOverlay");
+    if (ov) ov.classList.toggle("hidden", !scoped);
+  }
 
   world3d.renderer.render(world3d.scene, cam);
 }

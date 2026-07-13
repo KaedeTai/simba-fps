@@ -37,6 +37,35 @@
   #allyhp-wrap { width: 130px; height: 9px; border: 1px solid rgba(77,208,255,.5); background: rgba(0,0,0,.4); }
   #allyhp { height: 100%; width: 100%; background: linear-gradient(90deg,#4dd0ff,#7dffd0); transition: width .15s; }
 
+  /* === Sniper scope mode ==================================================
+     Full-screen black vignette with a circular clear "lens" in the middle,
+     mil-dot crosshair as an SVG that subtly breathes up/down. Shown only
+     when sniper is equipped and right-mouse is held (aiming3d). Toggled
+     via body.scope-active from JS. Also hides the weapon viewmodel layers
+     while active so nothing overlaps the reticle. */
+  #scopeOverlay { position: fixed; inset: 0; z-index: 5; pointer-events: none;
+    /* Circular vignette — transparent at center-24%, opaque black beyond 27%. */
+    background: radial-gradient(circle at center,
+      transparent 22%, transparent 24%, rgba(0,0,0,.95) 27%, #000 32%);
+    /* Slight inner-lens dim ring so the transition from clear → black
+       reads like real glass, not a flat cutout. */
+    box-shadow: inset 0 0 120px 40px rgba(0,0,0,.5); }
+  #scopeOverlay.hidden { display: none; }
+  .scope-reticle { position: absolute; top: 50%; left: 50%;
+    width: 46vh; height: 46vh;
+    /* Baseline positioning; the breathe animation adjusts from here. */
+    transform: translate(-50%, -50%);
+    animation: scopeBreathe 4s ease-in-out infinite; }
+  @keyframes scopeBreathe {
+    0%, 100% { transform: translate(-50%, calc(-50% - 3px)); }
+    50%      { transform: translate(-50%, calc(-50% + 3px)); }
+  }
+  /* Hide the weapon viewmodel canvases + the small green crosshair while
+     scoped so the SVG reticle is the only element in the visual centre. */
+  body.scope-active #weapon,
+  body.scope-active #weapon3d,
+  body.scope-active #crosshair { visibility: hidden; }
+
   /* z-index bumped to 4 so the muzzle flash / damage vignette overlays
      land above the opaque #world3d canvas from Phase 2. */
   #flash { position: fixed; inset: 0; pointer-events: none; opacity: 0; transition: opacity .05s;
