@@ -36,6 +36,46 @@ let USE_3D_WORLD = _readWorld3dPref();
 console.log("[fps][world3d] mode:", USE_3D_WORLD ? "3D" : "2.5D",
   "(source: URL/localStorage/default)");
 
+// -------------------- Teammate rifle rotation live-tuning --------------
+// Values are in units of π so it reads naturally in the URL and HUD
+// ("0.5" = π/2). Init from URL query (?rifleRX=0.5&rifleRY=0.5&rifleRZ=0);
+// keyboard: [ / ] adjust X, ; / ' adjust Y, , / . adjust Z (0.05π step);
+// P prints current values to console. Reapplies to the attached rifle in
+// real time via world3d.entities.teammate.rifle.
+function _readRifleDbg() {
+  let rx = 0.5, ry = 0.5, rz = 0;
+  try {
+    const u = new URLSearchParams(location.search);
+    if (u.has("rifleRX")) rx = parseFloat(u.get("rifleRX"));
+    if (u.has("rifleRY")) ry = parseFloat(u.get("rifleRY"));
+    if (u.has("rifleRZ")) rz = parseFloat(u.get("rifleRZ"));
+  } catch (e) {}
+  return { rx, ry, rz };
+}
+const _rifleDbg = _readRifleDbg();
+console.log("[fps][rifleDbg] init from URL:", _rifleDbg);
+function _rifleDbgApply() {
+  if (typeof world3d === "undefined") return;
+  const e = world3d && world3d.entities && world3d.entities.teammate;
+  if (!e || !e.rifle) return;
+  e.rifle.rotation.set(
+    _rifleDbg.rx * Math.PI, _rifleDbg.ry * Math.PI, _rifleDbg.rz * Math.PI);
+}
+function _rifleDbgUpdateHud() {
+  let hud = document.getElementById("rifleDbg");
+  if (!hud) {
+    hud = document.createElement("div");
+    hud.id = "rifleDbg";
+    hud.style.cssText = "position:fixed;left:12px;bottom:12px;z-index:9;" +
+      "font:11px 'SF Mono',Menlo,monospace;color:#7dffd0;" +
+      "background:rgba(0,0,0,.55);padding:5px 8px;border-radius:4px;" +
+      "pointer-events:none;letter-spacing:1px";
+    document.body.appendChild(hud);
+  }
+  const fmt = v => v.toFixed(2);
+  hud.textContent = `rifle: X=${fmt(_rifleDbg.rx)}π  Y=${fmt(_rifleDbg.ry)}π  Z=${fmt(_rifleDbg.rz)}π   [/] ;/'  ,/.  P=log`;
+}
+
 function toggleWorld3dMode() {
   const next = !USE_3D_WORLD;
   try { localStorage.setItem(WORLD3D_PREF_KEY, String(next)); } catch (e) {}
@@ -597,6 +637,29 @@ addEventListener("keydown", e => {
   if (e.code === "KeyB" || e.code === "Tab") {
     e.preventDefault();
     if (shopOpen) closeShop(); else if (running && !gameOver && !paused) openShop(false);
+  }
+  // -------- Teammate rifle rotation live tuning --------
+  // BracketLeft/Right → X, Semicolon/Quote → Y, Comma/Period → Z.
+  // KeyP dumps current values so the user can paste them into a URL or
+  // report them back for a defaults commit.
+  const RSTEP = 0.05;                                    // step in units of π
+  let touched = false;
+  if      (e.code === "BracketLeft")  { _rifleDbg.rx -= RSTEP; touched = true; }
+  else if (e.code === "BracketRight") { _rifleDbg.rx += RSTEP; touched = true; }
+  else if (e.code === "Semicolon")    { _rifleDbg.ry -= RSTEP; touched = true; }
+  else if (e.code === "Quote")        { _rifleDbg.ry += RSTEP; touched = true; }
+  else if (e.code === "Comma")        { _rifleDbg.rz -= RSTEP; touched = true; }
+  else if (e.code === "Period")       { _rifleDbg.rz += RSTEP; touched = true; }
+  else if (e.code === "KeyP")         {
+    console.log("[fps][rifleDbg]",
+      `X=${_rifleDbg.rx.toFixed(3)}π Y=${_rifleDbg.ry.toFixed(3)}π Z=${_rifleDbg.rz.toFixed(3)}π`,
+      "→ URL:",
+      `?rifleRX=${_rifleDbg.rx.toFixed(3)}&rifleRY=${_rifleDbg.ry.toFixed(3)}&rifleRZ=${_rifleDbg.rz.toFixed(3)}`);
+  }
+  if (touched) {
+    _rifleDbgApply();
+    _rifleDbgUpdateHud();
+    e.preventDefault();
   }
 });
 addEventListener("keyup", e => {
@@ -2990,11 +3053,11 @@ async function createTeammateFromMixamo() {
     //   3. `(0, -π/2, π)`         — still backwards.
     //   4. `(0, +π/2, 0)`         — muzzle forward but rifle upside-down.
     //   5. `(π, +π/2, 0)`         — top/bottom OK on old arms-down Idle.
-    //   6. NEW POSE (Shooter Pack): rifle-ready Idle rotates the hand bone
-    //      into an aim quaternion. The old X-π overcompensates the pitch
-    //      and points the muzzle at the sky. Halve the X flip to π/2 so
-    //      the muzzle levels out from vertical to horizontal.
-    rifle.rotation.set(Math.PI / 2, Math.PI / 2, 0);
+    //   6. NEW POSE (Shooter Pack): live-tunable via URL + keys.
+    //      URL: ?rifleRX=<n>&rifleRY=<n>&rifleRZ=<n> (n in units of π).
+    //      Keys: [/] adjust X, ;/' adjust Y, ,/. adjust Z (0.05π step).
+    //      P prints current values to console so they can be copied back.
+    rifle.rotation.set(_rifleDbg.rx * Math.PI, _rifleDbg.ry * Math.PI, _rifleDbg.rz * Math.PI);
     // Temporary diagnostic — an AxesHelper glued to the rifle so the user
     // can screenshot and confirm which world-axis the barrel actually
     // points along. Red = X, Green = Y, Blue = Z. Remove once orientation
@@ -3564,6 +3627,8 @@ function initWorld3d() {
       scene.remove(cur.group);
       scene.add(mixamoTeammate.group);
       world3d.entities.teammate = mixamoTeammate;
+      // Show the live-tuning HUD now that a Mixamo rifle exists to point at.
+      _rifleDbgUpdateHud();
     }).catch(err => {
       console.warn("[fps][world3d] mixamo load FAILED — staying on procedural mesh:", err);
     });
