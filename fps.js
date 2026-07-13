@@ -246,8 +246,14 @@ const weapons = [
     damage: 22,  range: 22, spread: 0.006, pellets: 1, auto: true,  vm: "laser",   cost: 700,  unlockWave: 7 },
   { id: "minigun", name: "機槍",     ico: "🌀", magSize: 80, fireRate: 0.04, reloadTime: 2.6,
     damage: 15,  range: 16, spread: 0.100, pellets: 1, auto: true,  vm: "minigun", cost: 900,  unlockWave: 8 },
-  { id: "plasma",  name: "電漿炮",   ico: "☄️", magSize: 20, fireRate: 0.22, reloadTime: 1.9,
-    damage: 75,  range: 20, spread: 0.020, pellets: 1, auto: true,  vm: "plasma",  cost: 1400, unlockWave: 10 },
+  // Plasma cannon is an AOE splash weapon — see splashRadius handling in
+  // tryShoot(). It doesn't need precise aim: fire toward a rough impact
+  // point and everything in the radius gets damaged with a smooth 1-t²
+  // falloff from center to edge. To balance the ability to wipe crowds,
+  // the mag is small (6) and the fire rate is slow (1 shot/sec).
+  { id: "plasma",  name: "電漿炮",   ico: "☄️", magSize: 6,  fireRate: 1.00, reloadTime: 2.4,
+    damage: 180, range: 20, spread: 0.020, pellets: 1, auto: true,  vm: "plasma",  cost: 1400, unlockWave: 10,
+    splashRadius: 3.5 },
 ].map(w => ({ ...w, mag: w.magSize, cooldown: 0, reloading: false, reloadT: 0, recoil: 0 }));
 let curWep = 0;
 let weapon = weapons[curWep];
@@ -1022,6 +1028,40 @@ function tryShoot() {
   // === 3D weapons prototype: mirror the fire event to the 3D viewmodel ===
   if (WEAPON_3D[weapon.vm]) weapon3dFire();
 
+  // ---------- AOE splash branch (plasma cannon and future rockets) ---------
+  // Cast forward, find impact point (wall hit or max range), then damage all
+  // alive enemies within splashRadius using a smooth 1-t² falloff (t is the
+  // normalized 0-1 distance to impact center). Aim doesn't need to be
+  // precise — the whole point is you can throw plasma at a crowd and hit
+  // everyone in the blast without lining up sprite rectangles.
+  if (weapon.splashRadius) {
+    const impact = _castRayImpact(player.x, player.y, player.dir, weapon.range);
+    _plasmaExplosion(impact.x, impact.y, weapon.splashRadius);
+    let hitCount = 0;
+    for (const e of enemies) {
+      if (e.dead) continue;
+      const dx = e.x - impact.x, dy = e.y - impact.y;
+      const d = Math.hypot(dx, dy);
+      if (d > weapon.splashRadius) continue;
+      // Wall between enemy center and impact center → no damage (blast
+      // shouldn't go through walls).
+      if (wallBetween(impact.x, impact.y, e.x, e.y)) continue;
+      const t = d / weapon.splashRadius;                 // 0 = center, 1 = edge
+      const falloff = Math.max(0, 1 - t * t);            // 1 → 0 quadratic
+      const dmg = weapon.damage * falloff;
+      e.hp -= dmg;
+      e.hurt = 0.18;
+      hitCount++;
+      if (e.hp <= 0 && !e.dead) {
+        e.dead = true; e.deadT = 0;
+        kills++; score += e.scoreVal; coins += e.reward;
+        if (e.boss) { bossAlive = false; showBanner(`🏆 首領已擊倒！獲得 ${e.reward} 金幣`); }
+      }
+    }
+    if (hitCount > 0) console.log("[fps][plasma] AOE hit", hitCount, "enemies at", impact.x.toFixed(1), impact.y.toFixed(1));
+    return;                                              // skip the pellet loop
+  }
+
   // Each pellet checks the crosshair (screen centre, ± spread) against the
   // enemy's on-screen sprite rectangle — so you must actually aim AT the enemy
   // (both horizontally and vertically) to hit it.
@@ -1066,6 +1106,57 @@ function wallBetween(x0, y0, x1, y1) {
     if (isWall(x, y)) return true;
   }
   return false;
+}
+
+// Fire-and-forget forward ray: from (x0,y0) along `dir` radians, walk until
+// the first wall hit or maxDist. Returns the impact point in grid units
+// (a wall-hit returns the last cell BEFORE the wall so we don't spawn
+// effects inside geometry). Used by plasma-style AOE weapons that need an
+// explosion origin regardless of whether the shot connects with an enemy.
+function _castRayImpact(x0, y0, dir, maxDist) {
+  const cos = Math.cos(dir), sin = Math.sin(dir);
+  const steps = Math.ceil(maxDist * 8);
+  const step = maxDist / steps;
+  for (let i = 1; i <= steps; i++) {
+    const nx = x0 + cos * i * step;
+    const ny = y0 + sin * i * step;
+    if (isWall(nx, ny)) {
+      const back = Math.max(0, (i - 0.5)) * step;
+      return { x: x0 + cos * back, y: y0 + sin * back, hit: true, dist: back };
+    }
+  }
+  return { x: x0 + cos * maxDist, y: y0 + sin * maxDist, hit: false, dist: maxDist };
+}
+
+// Plasma cannon impact FX — briefly spawns a glowing pink sphere at the
+// impact grid position (converted to Three.js world coords) that scales
+// out to splashRadius while fading. Uses requestAnimationFrame so it can
+// self-terminate without depending on any per-frame update slot.
+function _plasmaExplosion(gridX, gridY, radius) {
+  if (typeof world3d === "undefined" || !world3d.ready || !world3d.scene) return;
+  const geo = new THREE.SphereGeometry(1, 16, 12);
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0xff40cf, transparent: true, opacity: 0.65,
+  });
+  const boom = new THREE.Mesh(geo, mat);
+  // Same X→X, Y→Z mapping the world3d camera uses; eye height ~0.6 puts
+  // the boom center at torso level of a typical enemy.
+  boom.position.set(gridX, 0.6, gridY);
+  world3d.scene.add(boom);
+  const start = performance.now();
+  const DURATION = 320;  // ms
+  function _tick() {
+    const t = Math.min(1, (performance.now() - start) / DURATION);
+    boom.scale.setScalar(0.05 + t * radius);
+    boom.material.opacity = 0.65 * (1 - t);
+    if (t >= 1) {
+      world3d.scene.remove(boom);
+      geo.dispose(); mat.dispose();
+      return;
+    }
+    requestAnimationFrame(_tick);
+  }
+  requestAnimationFrame(_tick);
 }
 
 function muzzleFlash() {
