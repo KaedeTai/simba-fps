@@ -49,7 +49,7 @@ function _readRifleDbg() {
   // under the new Idle pose). URL query still overrides both so future
   // poses can be re-tuned without a code change.
   let rx = -0.5, ry = 0, rz = -0.5;
-  let tx = -0.04, ty = 0.05, tz = 0;    // baked from user's tuning session
+  let tx = -0.04, ty = 0.7, tz = 0;    // baked from user's tuning session
   try {
     const u = new URLSearchParams(location.search);
     if (u.has("rifleRX")) rx = parseFloat(u.get("rifleRX"));
@@ -3659,8 +3659,10 @@ function initWorld3d() {
       scene.remove(cur.group);
       scene.add(mixamoTeammate.group);
       world3d.entities.teammate = mixamoTeammate;
-      // Show the live-tuning HUD now that a Mixamo rifle exists to point at.
-      _rifleDbgUpdateHud();
+      // (HUD not shown on load — the debug tuning harness is still wired
+      // up, so pressing any of the adjust keys ([/] ;/' ,/. -/= etc.)
+      // will lazily create + populate the HUD if a future re-tune is
+      // needed. URL query params also still override the baked defaults.)
     }).catch(err => {
       console.warn("[fps][world3d] mixamo load FAILED — staying on procedural mesh:", err);
     });
