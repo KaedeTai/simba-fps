@@ -49,7 +49,7 @@ function _readRifleDbg() {
   // under the new Idle pose). URL query still overrides both so future
   // poses can be re-tuned without a code change.
   let rx = -0.5, ry = 0, rz = -0.5;
-  let tx = -0.04, ty = 0.7, tz = 0;    // baked from user's tuning session
+  let tx = -0.04, ty = 0.07, tz = 0;    // baked from user's tuning session
   try {
     const u = new URLSearchParams(location.search);
     if (u.has("rifleRX")) rx = parseFloat(u.get("rifleRX"));
@@ -2453,48 +2453,89 @@ function createMinigunMesh() {
 function createPlasmaMesh() {
   const g = new THREE.Group();
   const chassis  = _mat(0x22252a, 0.60, 0.45);
+  const chassis2 = _mat(0x2e3238, 0.55, 0.50);
   const dark     = _mat(0x0f1114, 0.55, 0.50);
+  const collar   = _mat(0x121418, 0.65, 0.40);
   const grip     = _mat(0x181820, 0.15, 0.85);
   const orbMat = new THREE.MeshStandardMaterial({
-    color: 0xff60d0, roughness: 0.30, emissive: 0xff40cf, emissiveIntensity: 1.4,
+    color: 0xff60d0, roughness: 0.30, emissive: 0xff40cf, emissiveIntensity: 1.6,
   });
   const coreMat = new THREE.MeshStandardMaterial({
-    color: 0xff90e0, roughness: 0.25, emissive: 0xff30cf, emissiveIntensity: 1.0,
+    color: 0xff90e0, roughness: 0.25, emissive: 0xff30cf, emissiveIntensity: 1.1,
   });
+  const boreMat = new THREE.MeshBasicMaterial({ color: 0xff20a0 });   // solid glow "into" the bore
 
-  // Fat barrel
-  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.28, 16), chassis);
-  barrel.rotation.x = Math.PI / 2; barrel.position.set(0, 0.045, -0.14); g.add(barrel);
-  // Plasma orb at the muzzle — glowing pink sphere
-  const orb = new THREE.Mesh(new THREE.SphereGeometry(0.055, 16, 12), orbMat);
-  orb.position.set(0, 0.045, -0.30); g.add(orb);
+  // ---- FAT SINGLE BARREL — the whole point of the redesign ----
+  // Bore radius 0.070 (was 0.035, ~2x fatter). Slight taper: the muzzle
+  // end (front) is 0.075, the breech end (back) is 0.062, so it reads
+  // like a proper flared cannon rather than a fat pipe.
+  const barrel = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.075, 0.062, 0.26, 20), chassis);
+  barrel.rotation.x = Math.PI / 2; barrel.position.set(0, 0.055, -0.13); g.add(barrel);
+  // Reinforcement bands — three thin dark rings around the barrel.
+  for (let i = 0; i < 3; i++) {
+    const band = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.078, 0.078, 0.014, 20), collar);
+    band.rotation.x = Math.PI / 2;
+    band.position.set(0, 0.055, -0.04 - i * 0.075); g.add(band);
+  }
+  // Wide muzzle collar / bore lip — the fat opening at the tip.
+  const muzzleCollar = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.090, 0.078, 0.030, 20), collar);
+  muzzleCollar.rotation.x = Math.PI / 2;
+  muzzleCollar.position.set(0, 0.055, -0.256); g.add(muzzleCollar);
+  // Bore interior — a flat pink disk you can see when looking down the
+  // barrel, so the muzzle reads "loaded" even when not firing.
+  const bore = new THREE.Mesh(new THREE.CircleGeometry(0.058, 20), boreMat);
+  bore.position.set(0, 0.055, -0.269); bore.rotation.y = Math.PI; g.add(bore);
+  // Plasma orb sitting in the muzzle — bigger to match the wider bore.
+  const orb = new THREE.Mesh(new THREE.SphereGeometry(0.070, 20, 14), orbMat);
+  orb.position.set(0, 0.055, -0.260); g.add(orb);
 
-  // Big receiver
-  const receiver = new THREE.Mesh(new THREE.BoxGeometry(0.075, 0.090, 0.22), chassis);
-  receiver.position.set(0, 0.032, 0.04); g.add(receiver);
-  // Exposed energy core — a thin cylinder visible through a cutout window
-  const core = new THREE.Mesh(new THREE.CylinderGeometry(0.020, 0.020, 0.15, 16), coreMat);
-  core.rotation.x = Math.PI / 2; core.position.set(0, 0.050, 0.05); g.add(core);
+  // ---- Larger receiver to house the fatter barrel ----
+  const receiver = new THREE.Mesh(new THREE.BoxGeometry(0.095, 0.110, 0.24), chassis);
+  receiver.position.set(0, 0.038, 0.04); g.add(receiver);
+  // Receiver top plate (slight color break for silhouette).
+  const topPlate = new THREE.Mesh(new THREE.BoxGeometry(0.078, 0.014, 0.20), chassis2);
+  topPlate.position.set(0, 0.100, 0.04); g.add(topPlate);
+  // Exposed energy core — glowing pink cylinder visible through the receiver.
+  const core = new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.026, 0.17, 16), coreMat);
+  core.rotation.x = Math.PI / 2; core.position.set(0, 0.055, 0.05); g.add(core);
+  // Twin exposed core caps at each end so the core reads as "plugged into" the receiver.
+  const capF = new THREE.Mesh(new THREE.CylinderGeometry(0.031, 0.031, 0.016, 16), collar);
+  capF.rotation.x = Math.PI / 2; capF.position.set(0, 0.055, -0.035); g.add(capF);
+  const capR = new THREE.Mesh(new THREE.CylinderGeometry(0.031, 0.031, 0.016, 16), collar);
+  capR.rotation.x = Math.PI / 2; capR.position.set(0, 0.055,  0.135); g.add(capR);
 
-  // Side vent fins — 4 thin boxes protruding sideways
+  // ---- Underbarrel plasma canister (fuel tank vibe) ----
+  const canister = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.038, 0.038, 0.14, 16), chassis2);
+  canister.rotation.x = Math.PI / 2;
+  canister.position.set(0, -0.008, -0.02); g.add(canister);
+  const canCap = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.042, 0.042, 0.010, 16), collar);
+  canCap.rotation.x = Math.PI / 2;
+  canCap.position.set(0, -0.008, -0.093); g.add(canCap);
+
+  // ---- Side vent fins — bigger and more of them for the cannon silhouette ----
   for (let side of [-1, 1]) {
-    for (let i = 0; i < 4; i++) {
-      const fin = new THREE.Mesh(new THREE.BoxGeometry(0.010, 0.050, 0.028), dark);
-      fin.position.set(side * 0.045, 0.030, -0.04 + i * 0.035); g.add(fin);
+    for (let i = 0; i < 5; i++) {
+      const fin = new THREE.Mesh(new THREE.BoxGeometry(0.014, 0.060, 0.030), dark);
+      fin.position.set(side * 0.052, 0.036, -0.02 + i * 0.032); g.add(fin);
     }
   }
 
-  // Grip + short stock
-  const gripMesh = new THREE.Mesh(new THREE.BoxGeometry(0.044, 0.100, 0.055), grip);
-  gripMesh.position.set(0, -0.035, 0.16); gripMesh.rotation.x = -0.38; g.add(gripMesh);
-  const stock = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.055, 0.10), dark);
-  stock.position.set(0, 0.015, 0.23); g.add(stock);
-  const stockPad = new THREE.Mesh(new THREE.BoxGeometry(0.050, 0.070, 0.018), dark);
-  stockPad.position.set(0, 0.005, 0.29); g.add(stockPad);
+  // ---- Grip + short stock ----
+  const gripMesh = new THREE.Mesh(new THREE.BoxGeometry(0.046, 0.105, 0.056), grip);
+  gripMesh.position.set(0, -0.038, 0.17); gripMesh.rotation.x = -0.38; g.add(gripMesh);
+  const stock = new THREE.Mesh(new THREE.BoxGeometry(0.048, 0.058, 0.10), dark);
+  stock.position.set(0, 0.020, 0.24); g.add(stock);
+  const stockPad = new THREE.Mesh(new THREE.BoxGeometry(0.052, 0.074, 0.020), dark);
+  stockPad.position.set(0, 0.010, 0.30); g.add(stockPad);
 
-  // Very large flash for the heavy energy discharge
-  const flash = _makeMuzzleFlash(0.32);
-  flash.position.set(0, 0.045, -0.36); g.add(flash);
+  // ---- Big muzzle flash for the heavy discharge ----
+  const flash = _makeMuzzleFlash(0.40);
+  flash.position.set(0, 0.055, -0.32); g.add(flash);
   g.userData.flash = flash;
   g.userData.emissive = [orbMat, coreMat];
   return g;
