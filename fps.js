@@ -1238,7 +1238,15 @@ function tryShoot() {
       if (best.hp <= 0 && !best.dead) {
         best.dead = true; best.deadT = 0;
         kills++; score += best.scoreVal; coins += best.reward;
-        if (best.boss) { bossAlive = false; showBanner(`🏆 首領已擊倒！獲得 ${best.reward} 金幣`); }
+        if (best.boss) {
+          bossAlive = false;
+          showBanner(`🏆 首領已擊倒！獲得 ${best.reward} 金幣`);
+          // Big death burst: ~40 particles, larger + longer-lived
+          _spawnHitSpark(best.x, best.y, 40, { big: true });
+        } else {
+          // Normal kill: small but visible burst
+          _spawnHitSpark(best.x, best.y, 10);
+        }
       }
     } else {
       // Miss: trace to the wall hit so the player sees where the shot went
@@ -1262,18 +1270,26 @@ function _spawnTracer(x1, y1, x2, y2, life) {
 // point in screen-space. Positions are world coords; the draw branch
 // projects them via the same enemyRect math so they sit at the right
 // depth behind walls (well, sort of — they always render on top).
+// `opts.big` (boss-kill, etc.) doubles the size + speed + life so the
+// death burst reads as a real explosion, not just a hit.
 const sparks = [];
-function _spawnHitSpark(worldX, worldY, count) {
+function _spawnHitSpark(worldX, worldY, count, opts) {
+  const big = !!(opts && opts.big);
   for (let i = 0; i < count; i++) {
     const ang = Math.random() * Math.PI * 2;
-    const speed = 0.6 + Math.random() * 1.2;       // world units / sec
+    const speed = (big ? 1.2 : 0.6) + Math.random() * (big ? 2.4 : 1.2);
     sparks.push({
       x: worldX, y: worldY,
       vx: Math.cos(ang) * speed,
       vy: Math.sin(ang) * speed,
-      life: 0.28 + Math.random() * 0.18,
-      maxLife: 0.45,
+      life: (big ? 0.6 : 0.28) + Math.random() * (big ? 0.4 : 0.18),
+      maxLife: 1.0,                 // overwritten right after — kept for the alpha calc
+      big,
     });
+    // maxLife is a per-spark field used by the alpha calc, so set it
+    // to the actual life value (not a default) so the fade is correct.
+    const s = sparks[sparks.length - 1];
+    s.maxLife = s.life;
   }
 }
 function _updateSparks(dt) {
@@ -1350,8 +1366,9 @@ function _drawTracers() {
 
 // Hit-spark particles — projected from world to screen coords the same
 // way the tracer is. Bright orange/yellow dots with a soft glow, sized
-// ~3-4px. They always render in 2.5D mode (USE_3D_WORLD skips this).
-// Sparks are small enough that they look fine even when the underlying
+// ~3-4px (10px glow + 4px core for boss-kill bursts via `big` flag).
+// They always render in 2.5D mode (USE_3D_WORLD skips this). Sparks
+// are small enough that they look fine even when the underlying
 // raycaster doesn't depth-sort them against walls — the eye reads them
 // as impact effect, not part of the geometry.
 function _drawSparks() {
@@ -1369,12 +1386,14 @@ function _drawSparks() {
     if (Math.abs(ang) > FOV) continue;
     const sx = W / 2 + Math.tan(ang) * (W / 2) / Math.tan(FOV / 2);
     const sy = horizon + Math.min(H * 1.8, H / dist) / 2;
+    const core = s.big ? 4 : 2.5;
+    const glow = s.big ? 10 : 6;
     // Soft glow
     ctx.fillStyle = `rgba(255, 180, 50, ${a * 0.4})`;
-    ctx.beginPath(); ctx.arc(sx, sy, 6, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.arc(sx, sy, glow, 0, 7); ctx.fill();
     // Bright core
     ctx.fillStyle = `rgba(255, 240, 160, ${a})`;
-    ctx.beginPath(); ctx.arc(sx, sy, 2.5, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.arc(sx, sy, core, 0, 7); ctx.fill();
   }
   ctx.restore();
 }
