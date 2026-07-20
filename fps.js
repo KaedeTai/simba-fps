@@ -1218,6 +1218,10 @@ function tryShoot() {
       // world coords (in renderWorld) so the line is occluded by walls
       // via the existing per-column z-buffer.
       _spawnTracer(player.x, player.y, best.x, best.y, 0.32);
+      // === Hit-spark: bright yellow particles scatter from the hit
+      // point in screen-space, fade out. Drawn after walls + enemies
+      // so it sits on top of the world.
+      _spawnHitSpark(best.x, best.y, 8);
       // === Damage popup: floating number above the hit enemy. Drawn
       // in drawEnemy from the enemy's `damagePopups` array.
       if (!best.damagePopups) best.damagePopups = [];
@@ -1231,6 +1235,8 @@ function tryShoot() {
       // Miss: trace to the wall hit so the player sees where the shot went
       const impact = _castRayImpact(player.x, player.y, player.dir, weapon.range, { fuseRange: 0 });
       _spawnTracer(player.x, player.y, impact.x, impact.y, 0.18);
+      // Smaller spark on wall hit so misses still feel reactive
+      _spawnHitSpark(impact.x, impact.y, 3);
     }
   }
 }
@@ -1242,6 +1248,37 @@ const tracers = [];
 function _spawnTracer(x1, y1, x2, y2, life) {
   tracers.push({ x1, y1, x2, y2, life, maxLife: life });
 }
+
+// Hit-spark pool — bright yellow particles that scatter from the hit
+// point in screen-space. Positions are world coords; the draw branch
+// projects them via the same enemyRect math so they sit at the right
+// depth behind walls (well, sort of — they always render on top).
+const sparks = [];
+function _spawnHitSpark(worldX, worldY, count) {
+  for (let i = 0; i < count; i++) {
+    const ang = Math.random() * Math.PI * 2;
+    const speed = 0.6 + Math.random() * 1.2;       // world units / sec
+    sparks.push({
+      x: worldX, y: worldY,
+      vx: Math.cos(ang) * speed,
+      vy: Math.sin(ang) * speed,
+      life: 0.28 + Math.random() * 0.18,
+      maxLife: 0.45,
+    });
+  }
+}
+function _updateSparks(dt) {
+  for (let i = sparks.length - 1; i >= 0; i--) {
+    const s = sparks[i];
+    s.x += s.vx * dt;
+    s.y += s.vy * dt;
+    s.vx *= 0.86;                                // drag
+    s.vy *= 0.86;
+    s.life -= dt;
+    if (s.life <= 0) sparks.splice(i, 1);
+  }
+}
+
 function _updateTracers(dt) {
   for (let i = tracers.length - 1; i >= 0; i--) {
     tracers[i].life -= dt;
@@ -1298,6 +1335,37 @@ function _drawTracers() {
     ctx.moveTo(startX, startY);
     ctx.lineTo(endX, endY);
     ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// Hit-spark particles — projected from world to screen coords the same
+// way the tracer is. Bright orange/yellow dots with a soft glow, sized
+// ~3-4px. They always render in 2.5D mode (USE_3D_WORLD skips this).
+// Sparks are small enough that they look fine even when the underlying
+// raycaster doesn't depth-sort them against walls — the eye reads them
+// as impact effect, not part of the geometry.
+function _drawSparks() {
+  if (sparks.length === 0 || USE_3D_WORLD) return;
+  const horizon = HALF_H + player.pitch;
+  ctx.save();
+  for (const s of sparks) {
+    const a = Math.max(0, s.life / s.maxLife);
+    const dx = s.x - player.x, dy = s.y - player.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist < 0.001) continue;
+    let ang = Math.atan2(dy, dx) - player.dir;
+    while (ang > Math.PI) ang -= 2 * Math.PI;
+    while (ang < -Math.PI) ang += 2 * Math.PI;
+    if (Math.abs(ang) > FOV) continue;
+    const sx = W / 2 + Math.tan(ang) * (W / 2) / Math.tan(FOV / 2);
+    const sy = horizon + Math.min(H * 1.8, H / dist) / 2;
+    // Soft glow
+    ctx.fillStyle = `rgba(255, 180, 50, ${a * 0.4})`;
+    ctx.beginPath(); ctx.arc(sx, sy, 6, 0, 7); ctx.fill();
+    // Bright core
+    ctx.fillStyle = `rgba(255, 240, 160, ${a})`;
+    ctx.beginPath(); ctx.arc(sx, sy, 2.5, 0, 7); ctx.fill();
   }
   ctx.restore();
 }
@@ -4694,9 +4762,11 @@ function frame(now) {
     if (autosaveT >= AUTOSAVE_INTERVAL_S) { saveRun(); autosaveT = 0; }
   }
   _updateTracers(dt);
+  _updateSparks(dt);
   renderWorld();
   renderEnemies();
   _drawTracers();
+  _drawSparks();
   // === 3D world entities: draw the teammate + (future batches) enemies + boss.
   // Runs BEFORE weapon layer so the viewmodel stays on top of world entities. ===
   renderWorld3d(dt);
