@@ -1149,6 +1149,9 @@ function tryShoot() {
   weapon.cooldown = weapon.fireRate;
   weapon.recoil = 1;
   muzzleFlash();
+  // === Muzzle smoke: a small grey puff that drifts forward + up from
+  // the gun, fades over ~0.7s. Adds atmosphere to the gunshot.
+  _spawnMuzzleSmoke();
   // === 3D weapons prototype: mirror the fire event to the 3D viewmodel ===
   if (WEAPON_3D[weapon.vm]) weapon3dFire();
 
@@ -1323,6 +1326,44 @@ function _updateTracers(dt) {
   }
 }
 
+// Muzzle smoke — small grey puffs that drift forward + up from the gun
+// after each shot. Different physics from sparks: rises with low drag,
+// and expands in size as it ages. Drawn in screen-space (same projection
+// as sparks + tracers). Limited to 24 active puffs so a SMG can't flood
+// the screen.
+const smoke = [];
+function _spawnMuzzleSmoke() {
+  const muzzleX = player.x + Math.cos(player.dir) * 0.5;
+  const muzzleY = player.y + Math.sin(player.dir) * 0.5;
+  for (let i = 0; i < 4; i++) {
+    const ang = player.dir + (Math.random() - 0.5) * 0.4;
+    const spd = 0.3 + Math.random() * 0.3;
+    smoke.push({
+      x: muzzleX, y: muzzleY,
+      vx: Math.cos(ang) * spd,
+      vy: Math.sin(ang) * spd - 0.15,           // slight upward bias
+      life: 0.6 + Math.random() * 0.3,
+      maxLife: 0.9,
+      size: 4 + Math.random() * 2,
+    });
+  }
+  // Cap the pool to keep frame budget reasonable
+  while (smoke.length > 24) smoke.shift();
+}
+function _updateSmoke(dt) {
+  for (let i = smoke.length - 1; i >= 0; i--) {
+    const p = smoke[i];
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.vx *= 0.96;                                // light drag
+    p.vy *= 0.96;
+    p.vy -= 0.12 * dt;                            // gentle buoyancy
+    p.life -= dt;
+    p.size += dt * 8;                              // expand as it ages
+    if (p.life <= 0) smoke.splice(i, 1);
+  }
+}
+
 // Draw each tracer as a thick yellow streak from the gun (bottom-center
 // of the screen) to the hit point, projected to screen coords the same
 // way enemies are. Two passes: a wide soft glow underneath a sharper
@@ -1394,6 +1435,35 @@ function _drawSparks() {
     // Bright core
     ctx.fillStyle = `rgba(255, 240, 160, ${a})`;
     ctx.beginPath(); ctx.arc(sx, sy, core, 0, 7); ctx.fill();
+  }
+  ctx.restore();
+}
+
+// Muzzle smoke puffs — drawn in screen-space using the same projection
+// as sparks/tracers. Greyscale, semi-transparent, grows as it ages
+// (size field is incremented each frame in _updateSmoke). 2.5D only.
+function _drawSmoke() {
+  if (smoke.length === 0 || USE_3D_WORLD) return;
+  const horizon = HALF_H + player.pitch;
+  ctx.save();
+  for (const p of smoke) {
+    const a = Math.max(0, p.life / p.maxLife);
+    const dx = p.x - player.x, dy = p.y - player.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist < 0.001) continue;
+    let ang = Math.atan2(dy, dx) - player.dir;
+    while (ang > Math.PI) ang -= 2 * Math.PI;
+    while (ang < -Math.PI) ang += 2 * Math.PI;
+    if (Math.abs(ang) > FOV) continue;
+    const sx = W / 2 + Math.tan(ang) * (W / 2) / Math.tan(FOV / 2);
+    const sy = horizon + Math.min(H * 1.8, H / dist) / 2;
+    // Two soft layers so the smoke reads as volume, not a flat disc
+    const outer = `rgba(180, 180, 180, ${a * 0.18})`;
+    const inner = `rgba(220, 220, 220, ${a * 0.30})`;
+    ctx.fillStyle = outer;
+    ctx.beginPath(); ctx.arc(sx, sy, p.size * 1.4, 0, 7); ctx.fill();
+    ctx.fillStyle = inner;
+    ctx.beginPath(); ctx.arc(sx, sy, p.size, 0, 7); ctx.fill();
   }
   ctx.restore();
 }
@@ -4835,10 +4905,12 @@ function frame(now) {
   }
   _updateTracers(dt);
   _updateSparks(dt);
+  _updateSmoke(dt);
   renderWorld();
   renderEnemies();
   _drawTracers();
   _drawSparks();
+  _drawSmoke();
   // === 3D world entities: draw the teammate + (future batches) enemies + boss.
   // Runs BEFORE weapon layer so the viewmodel stays on top of world entities. ===
   renderWorld3d(dt);
