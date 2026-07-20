@@ -1214,13 +1214,92 @@ function tryShoot() {
     if (best) {
       best.hp -= weapon.damage;
       best.hurt = 0.18;
+      // === Tracer: yellow streak from player to hit point. Drawn in
+      // world coords (in renderWorld) so the line is occluded by walls
+      // via the existing per-column z-buffer.
+      _spawnTracer(player.x, player.y, best.x, best.y, 0.32);
+      // === Damage popup: floating number above the hit enemy. Drawn
+      // in drawEnemy from the enemy's `damagePopups` array.
+      if (!best.damagePopups) best.damagePopups = [];
+      best.damagePopups.push({ value: weapon.damage, life: 0.9, maxLife: 0.9, drift: 0 });
       if (best.hp <= 0 && !best.dead) {
         best.dead = true; best.deadT = 0;
         kills++; score += best.scoreVal; coins += best.reward;
         if (best.boss) { bossAlive = false; showBanner(`🏆 首領已擊倒！獲得 ${best.reward} 金幣`); }
       }
+    } else {
+      // Miss: trace to the wall hit so the player sees where the shot went
+      const impact = _castRayImpact(player.x, player.y, player.dir, weapon.range, { fuseRange: 0 });
+      _spawnTracer(player.x, player.y, impact.x, impact.y, 0.18);
     }
   }
+}
+
+// Tracer pool — bright streaks from the player to each hit. Each one
+// lives for ~0.3s and is drawn as a thick yellow line in world coords.
+// Per-frame, life ticks down; entries with life <= 0 are pruned.
+const tracers = [];
+function _spawnTracer(x1, y1, x2, y2, life) {
+  tracers.push({ x1, y1, x2, y2, life, maxLife: life });
+}
+function _updateTracers(dt) {
+  for (let i = tracers.length - 1; i >= 0; i--) {
+    tracers[i].life -= dt;
+    if (tracers[i].life <= 0) tracers.splice(i, 1);
+  }
+  // Damage popups: float up over the enemy, fade out, then expire.
+  // The canvas-draw branch reads `p.drift` for the upward Y offset, so
+  // we accumulate it here in world-time (px = elapsed / maxLife * 50).
+  for (const e of enemies) {
+    if (!e.damagePopups) continue;
+    for (let i = e.damagePopups.length - 1; i >= 0; i--) {
+      const p = e.damagePopups[i];
+      p.life -= dt;
+      p.drift = (1 - p.life / p.maxLife) * 50;
+      if (p.life <= 0) e.damagePopups.splice(i, 1);
+    }
+  }
+}
+
+// Draw each tracer as a thick yellow streak from the gun (bottom-center
+// of the screen) to the hit point, projected to screen coords the same
+// way enemies are. Two passes: a wide soft glow underneath a sharper
+// bright line. Only renders in 2.5D mode (3D walls are drawn on the
+// world3d canvas, not the raycaster canvas).
+function _drawTracers() {
+  if (tracers.length === 0 || USE_3D_WORLD) return;
+  const startX = W / 2;
+  const startY = H * 0.92;
+  const horizon = HALF_H + player.pitch;
+  ctx.save();
+  ctx.lineCap = "round";
+  for (const t of tracers) {
+    const alpha = Math.max(0, t.life / t.maxLife);
+    const dx = t.x2 - player.x, dy = t.y2 - player.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist < 0.0001) continue;
+    let ang = Math.atan2(dy, dx) - player.dir;
+    while (ang > Math.PI) ang -= 2 * Math.PI;
+    while (ang < -Math.PI) ang += 2 * Math.PI;
+    if (Math.abs(ang) > FOV) continue;            // hit was off-screen
+    const endX = W / 2 + Math.tan(ang) * (W / 2) / Math.tan(FOV / 2);
+    const endY = horizon + Math.min(H * 1.8, H / dist) / 2;
+    // Soft outer glow
+    ctx.strokeStyle = `rgba(255, 180, 60, ${alpha * 0.35})`;
+    ctx.lineWidth = 7;
+    ctx.beginPath();
+    ctx.moveTo(startX, startY);
+    ctx.lineTo(endX, endY);
+    ctx.stroke();
+    // Bright core
+    ctx.strokeStyle = `rgba(255, 230, 120, ${alpha * 0.95})`;
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(startX, startY);
+    ctx.lineTo(endX, endY);
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 
 function reload() {
@@ -1803,6 +1882,22 @@ function drawEnemy(cx, top, w, h, e) {
       ctx.fillStyle = "rgba(0,0,0,.6)"; ctx.fillRect(bx, by, bw, bh);
       ctx.fillStyle = e.friendly ? "#4dd0ff" : e.boss ? "#ff4bd0" : "#4dff6a";
       ctx.fillRect(bx, by, bw * Math.max(0, e.hp / e.maxHp), bh);
+    }
+    // === Damage popups: yellow numbers floating up over the enemy.
+    // Each popup drifts upward via its `drift` value (set in the
+    // per-frame update) and fades out as life ticks down.
+    if (e.damagePopups && e.damagePopups.length) {
+      ctx.textAlign = "center";
+      for (const p of e.damagePopups) {
+        const a = Math.max(0, p.life / p.maxLife);
+        const fontSize = Math.max(11, w * 0.10) | 0;
+        ctx.font = `bold ${fontSize}px Courier New`;
+        const py = top - h * 0.05 - p.drift;
+        ctx.fillStyle = `rgba(0,0,0,${a * 0.7})`;
+        ctx.fillText("-" + p.value, cx + 1, py + 1);
+        ctx.fillStyle = `rgba(255,230,80,${a})`;
+        ctx.fillText("-" + p.value, cx, py);
+      }
     }
     ctx.restore();
     return;
@@ -4598,8 +4693,10 @@ function frame(now) {
     autosaveT += dt;
     if (autosaveT >= AUTOSAVE_INTERVAL_S) { saveRun(); autosaveT = 0; }
   }
+  _updateTracers(dt);
   renderWorld();
   renderEnemies();
+  _drawTracers();
   // === 3D world entities: draw the teammate + (future batches) enemies + boss.
   // Runs BEFORE weapon layer so the viewmodel stays on top of world entities. ===
   renderWorld3d(dt);
