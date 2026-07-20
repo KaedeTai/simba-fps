@@ -2494,10 +2494,53 @@ function _genWeaponTextures() {
 // .polymer to be defined before the first call to _mat.
 _genWeaponTextures();
 
+// Procedural env-map: a soft 3-stop vertical gradient that fakes studio
+// lighting on the metal parts of the 3D weapons. Without an env-map, the
+// weapons look "flat" because Three.js's IBL (image-based lighting)
+// only kicks in when material.envMap is set. The gradient is intentionally
+// subtle (low contrast) so reflections look like a dim armory, not a
+// showroom floor.
+function _genWeaponEnvMap() {
+  if (weaponTextures.envMap) return;
+  const c = document.createElement("canvas");
+  c.width = 256; c.height = 256;
+  const g = c.getContext("2d");
+  const grad = g.createLinearGradient(0, 0, 0, 256);
+  grad.addColorStop(0.00, "#5a6478");   // top — cool sky
+  grad.addColorStop(0.45, "#1a1c20");   // horizon — dark
+  grad.addColorStop(0.55, "#1a1c20");
+  grad.addColorStop(1.00, "#2a2418");   // floor — warm
+  g.fillStyle = grad; g.fillRect(0, 0, 256, 256);
+  // A few soft light "windows" for highlights
+  for (let i = 0; i < 3; i++) {
+    const x = 40 + i * 70 + Math.random() * 20;
+    const y = 30 + Math.random() * 40;
+    const r = 30 + Math.random() * 25;
+    const rg = g.createRadialGradient(x, y, 0, x, y, r);
+    rg.addColorStop(0, "rgba(255,240,200,0.6)");
+    rg.addColorStop(1, "rgba(255,240,200,0)");
+    g.fillStyle = rg;
+    g.beginPath(); g.arc(x, y, r, 0, 7); g.fill();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.mapping = THREE.EquirectangularReflectionMapping;  // for envMap use
+  if (THREE.SRGBColorSpace !== undefined) tex.colorSpace = THREE.SRGBColorSpace;
+  weaponTextures.envMap = tex;
+}
+_genWeaponEnvMap();
+
 function _mat(color, metalness, roughness, texKey) {
   const params = { color, metalness, roughness };
   if (texKey && weaponTextures[texKey]) {
     params.map = weaponTextures[texKey];
+  }
+  // Attach the envmap to metal-bearing parts so the studio lighting
+  // gradient reflects on them. Low envMapIntensity (0.45) keeps the
+  // look subtle — without it the weapons would look like a
+  // showroom floor; with it they look like a dimly-lit armory.
+  if (metalness > 0.3 && weaponTextures.envMap) {
+    params.envMap = weaponTextures.envMap;
+    params.envMapIntensity = 0.45;
   }
   return new THREE.MeshStandardMaterial(params);
 }
