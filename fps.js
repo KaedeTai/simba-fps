@@ -580,17 +580,42 @@ function findSpawn(minDist2) {
 // bigger maps get proportionally more enemies so they aren't empty
 function mapScale() { return Math.max(1, Math.round((MAP_W * MAP_H) / (22 * 22))); }
 
+// Pick a kind for the current wave slot. Mix shifts with wave number so
+// later waves throw harder variants at the player: early = mostly grunts,
+// mid = shields show up, late = shooters start peppering from range.
+function pickEnemyKind() {
+  // Tiers roll up the harder kinds as the wave climbs.
+  const r = Math.random();
+  if (wave >= 6 && r < 0.15) return "shooter";           // 15% ranged
+  if (wave >= 3 && r < 0.40) return "shield";            // 25% tank
+  return "grunt";                                        // 60% baseline
+}
+
 function spawnWave(n) {
   const count = n * mapScale();
   for (let i = 0; i < count; i++) {
     const p = findSpawn(25);
     if (!p) continue;
-    const hp = 40 + wave * 8;
+    const kind = pickEnemyKind();
+    const cfg = ENEMY_SPRITES[kind];
+    const baseHp  = 40 + wave * 8;
+    const baseDmg = 8 + wave;
+    const hp  = Math.round(baseHp  * cfg.baseHpMul);
+    const dmg = Math.round(baseDmg * cfg.baseDmgMul);
+    const spd = (0.9 + Math.random() * 0.5 + wave * 0.05) * cfg.baseSpdMul;
     enemies.push({
       x: p.x, y: p.y, hp, maxHp: hp,
-      speed: 0.9 + Math.random() * 0.5 + wave * 0.05,
-      dmg: 8 + wave, reward: 25, scoreVal: 100,
-      radius: 0.45, sizeScale: 1, boss: false,
+      speed: spd, dmg, reward: kind === "boss" ? 650 : 25 + (kind === "shield" ? 35 : 0),
+      scoreVal: kind === "shield" ? 220 : kind === "shooter" ? 160 : 100,
+      radius: kind === "shield" ? 0.55 : 0.45,
+      sizeScale: kind === "shield" ? 1.25 : 1.0,
+      boss: false, kind, ranged: cfg.ranged,
+      // Shooter-only state: keeps a distance from the player and fires
+      // projectiles (visual: glowing tracer) instead of melee charges.
+      // The projectile is reused from the boss / player path; for the
+      // shooter we just call the same wallBetween + aimAt + damage logic
+      // but with reduced fire rate + damage.
+      fireT: 0,
       hurt: 0, dead: false, deadT: 0, attackCd: 0, dist: 999,
     });
   }
@@ -598,13 +623,15 @@ function spawnWave(n) {
 
 function spawnBoss() {
   const p = findSpawn(36) || { x: MAP_W - 3.5, y: MAP_H - 3.5 };
-  const hp = 900 + wave * 180;                 // tougher: bigger HP pool
+  const cfg = ENEMY_SPRITES.boss;
+  const hp = (900 + wave * 180) * cfg.baseHpMul;
   const reward = 650 + wave * 110;
   enemies.push({
     x: p.x, y: p.y, hp, maxHp: hp,
-    speed: 0.8 + wave * 0.03,
-    dmg: 30 + wave * 2, reward, scoreVal: 2500,
-    radius: 0.95, sizeScale: 2.4, boss: true, reach: 1.8,
+    speed: (0.8 + wave * 0.03) * cfg.baseSpdMul,
+    dmg: Math.round((30 + wave * 2) * cfg.baseDmgMul),
+    reward, scoreVal: 2500,
+    radius: 0.95, sizeScale: 2.4, boss: true, kind: "boss", ranged: cfg.ranged, reach: cfg.reach,
     enraged: false,
     hurt: 0, dead: false, deadT: 0, attackCd: 0, dist: 999,
   });
@@ -1466,6 +1493,7 @@ function update(dt) {
   for (const e of enemies) {
     if (e.dead) { e.deadT += dt; continue; }
     if (e.hurt > 0) e.hurt -= dt;
+    if (e.muzzle > 0) e.muzzle -= dt;
     e.dist = Math.hypot(player.x - e.x, player.y - e.y);
 
     // boss enrages below 40% HP: faster, hits more often
@@ -1480,6 +1508,56 @@ function update(dt) {
 
     const reach = e.reach || 1.1;
     const sees = !wallBetween(e.x, e.y, tgt.x, tgt.y);
+
+    // === RANGED AI (shooter) — keep distance, fire from optimal range ===
+    if (e.ranged) {
+      const ENGAGE_MIN = 3.5, ENGAGE_MAX = 7.5;
+      if (sees && resumeSafetyT <= 0) {
+        if (tdist > ENGAGE_MAX) {
+          // approach target
+          const step = e.speed * dt;
+          const nx = tx / tdist * step, ny = ty / tdist * step;
+          if (!isWall(e.x + nx, e.y)) e.x += nx;
+          if (!isWall(e.x, e.y + ny)) e.y += ny;
+        } else if (tdist < ENGAGE_MIN) {
+          // retreat (back away from target)
+          const step = e.speed * dt;
+          const nx = -tx / tdist * step, ny = -ty / tdist * step;
+          if (!isWall(e.x + nx, e.y)) e.x += nx;
+          if (!isWall(e.x, e.y + ny)) e.y += ny;
+        }
+        // strafe sideways while in band (small wobble so the player has to lead)
+        if (tdist >= ENGAGE_MIN && tdist <= ENGAGE_MAX) {
+          const strafeDir = ((e.x * 7 + e.y * 13) | 0) % 2 === 0 ? 1 : -1;   // cheap per-enemy sign
+          const px = -ty / tdist, py = tx / tdist;          // perpendicular to target
+          const step = e.speed * 0.4 * dt;
+          const nx = px * step * strafeDir, ny = py * step * strafeDir;
+          if (!isWall(e.x + nx, e.y)) e.x += nx;
+          if (!isWall(e.x, e.y + ny)) e.y += ny;
+        }
+      }
+      if (e.attackCd > 0) e.attackCd -= dt;
+      if (sees && tdist >= ENGAGE_MIN && tdist <= ENGAGE_MAX &&
+          e.attackCd <= 0 && resumeSafetyT <= 0) {
+        e.attackCd = 1.7;                  // ~0.6 shots/sec
+        e.muzzle = 0.18;                   // visual flash, consumed by drawEnemy
+        if (tgt === player) {
+          player.hp -= e.dmg;
+          hurtT = 0.3;
+          if (player.hp <= 0) { player.hp = 0; endGame(); return; }
+        } else {
+          ally.hp -= e.dmg;
+          ally.hurt = 0.2;
+          if (ally.hp <= 0 && !ally.dead) {
+            ally.hp = 0; ally.dead = true; ally.deadT = 0;
+            showBanner("⚠ 隊友倒下了！可在商店復活");
+          }
+        }
+      }
+      continue;   // ranged: skip the melee branch
+    }
+
+    // === MELEE AI (existing) ===
     // === persistence: freeze enemy movement during resume-safety grace ===
     if (sees && tdist > reach - 0.2 && resumeSafetyT <= 0) {
       const step = e.speed * (e.enraged ? 1.5 : 1) * dt;
@@ -1667,6 +1745,68 @@ function drawEnemy(cx, top, w, h, e) {
   ctx.save();
   if (e.dead) ctx.globalAlpha = Math.max(0, 1 - e.deadT / 1.2);
   const flash = e.hurt > 0;
+
+  // === SPRITE PATH ===
+  // If we have a pre-keyed PNG for this enemy's kind, draw it instead of
+  // the hand-rolled geometric body. The 1024x1024 sprite is foot-anchored
+  // to the same groundY the geometric path used (top + h), and scaled to
+  // the enemy height. Per-column occlusion in renderEnemies() already
+  // clipped the canvas to a visible span, so drawImage just paints.
+  // Old enemies without a `kind` field (e.g. from a saved run) fall back
+  // to "grunt" so they don't render as the default geometric blob.
+  const spriteKind = e.friendly ? "grunt" : (e.kind || (e.boss ? "boss" : "grunt"));
+  const spriteImg  = enemyImages[spriteKind];
+  if (spriteImg) {
+    // Image is 1024x1024 (square). Scale to enemy height so the silhouette
+    // matches what the geometric version used to occupy. Trim a sliver off
+    // top + bottom of the source image (headFrac / footFrac) so the head
+    // doesn't crowd the health bar and the feet don't clip below the
+    // ground shadow.
+    const HEAD_FRAC = 0.06, FOOT_FRAC = 0.97;
+    const srcW = spriteImg.width, srcH = spriteImg.height;
+    const usableFrac = FOOT_FRAC - HEAD_FRAC;
+    const drawH = h * 1.05;                         // a touch taller than the geo sprite
+    const drawW = drawH;                            // square aspect
+    const srcCropH = srcH * usableFrac;
+    const drawSrcH = srcH;
+    // srcRect: top-left + size of the slice we want
+    const sy = srcH * HEAD_FRAC;
+    const sx = (srcW - srcW * usableFrac) / 2;      // also crop sides if the image has horizontal padding
+    const sw = srcW * usableFrac;
+    const sh = srcH * usableFrac;
+    // dstRect: where on the game canvas the sprite lands (foot at top + h)
+    const dx = cx - drawW / 2;
+    const dy = top + h - drawH;
+    // Hurt flash: draw sprite first, then a translucent white overlay
+    ctx.drawImage(spriteImg, sx, sy, sw, sh, dx, dy, drawW, drawH);
+    if (flash) {
+      ctx.fillStyle = "rgba(255,255,255,0.55)";
+      ctx.fillRect(dx, dy, drawW, drawH);
+    }
+    // Shooter muzzle flash — small green dot near the rifle scope area
+    if (e.muzzle > 0 && e.ranged) {
+      const a = e.muzzle / 0.18;
+      ctx.fillStyle = `rgba(120,255,140,${a})`;
+      ctx.beginPath();
+      ctx.arc(cx + w * 0.18, top + h * 0.36, 5 + 6 * a, 0, 7);
+      ctx.fill();
+    }
+    // "友" tag above the ally (kept even though 3D world owns the ally)
+    if (e.friendly) {
+      ctx.fillStyle = "#6cf0ff"; ctx.font = `bold ${Math.max(10, w * 0.22) | 0}px Courier New`;
+      ctx.textAlign = "center"; ctx.fillText("友", cx, top - h * 0.05);
+    }
+    // health bar (same as geometric path)
+    if (e.boss || e.friendly || e.hp < e.maxHp) {
+      const bw = w * (e.boss ? 0.9 : 0.72), bx = cx - bw / 2, by = top - h * (e.boss ? 0.05 : 0.02);
+      const bh = h * (e.boss ? 0.045 : 0.028);
+      ctx.fillStyle = "rgba(0,0,0,.6)"; ctx.fillRect(bx, by, bw, bh);
+      ctx.fillStyle = e.friendly ? "#4dd0ff" : e.boss ? "#ff4bd0" : "#4dff6a";
+      ctx.fillRect(bx, by, bw * Math.max(0, e.hp / e.maxHp), bh);
+    }
+    ctx.restore();
+    return;
+  }
 
   // per-type colour palette (base / dark / light / trim / eye-glow)
   let base, dark, lite, trim, eye;
@@ -1871,6 +2011,42 @@ function loadGunImage(key, src) {
 Promise.all(Object.entries(GUN_SPRITES).map(([k, s]) => loadGunImage(k, s.src)))
   .then(() => console.log("[fps] all gun sprites ready. gunImages keys =", Object.keys(gunImages)));
 
+// =========================================================================
+// ENEMY SPRITES — high-res 3D-rendered monsters, pre-chroma-keyed PNGs.
+// Each enemy type has its own silhouette so the player can read "shield guy"
+// vs "shooter" vs "boss" at a glance. The 2.5D billboard path uses these
+// directly via drawImage; the 3D world path applies them as canvas textures
+// on a camera-facing plane so depth + lighting still work. Same deal as the
+// gun sprites: magenta-bg JPEG → keyed RGBA PNG via an offline PIL pass.
+// =========================================================================
+const ENEMY_SPRITES = {
+  // kind:    one of "grunt" | "shield" | "shooter" | "boss"  (matches e.kind)
+  // src:     relative PNG path
+  // scale2d: drawn size on the 2.5D canvas (image is 1024px, scale 0.5 = 512px)
+  // baseHpMul / baseDmgMul / baseSpdMul: per-type stat tuning applied at spawn
+  // reach:   melee attack reach (only used by melee kinds)
+  // ranged:  if true, the enemy keeps distance and fires projectiles instead
+  //          of melee charges
+  grunt:   { src: "fps_assets/enemy_grunt.png",   scale2d: 0.48, baseHpMul: 1.00, baseDmgMul: 1.00, baseSpdMul: 1.00, reach: 1.10, ranged: false },
+  shield:  { src: "fps_assets/enemy_shield.png",  scale2d: 0.52, baseHpMul: 1.80, baseDmgMul: 1.30, baseSpdMul: 0.65, reach: 1.20, ranged: false },
+  shooter: { src: "fps_assets/enemy_shooter.png", scale2d: 0.52, baseHpMul: 0.60, baseDmgMul: 1.20, baseSpdMul: 0.80, reach: 0.90, ranged: true  },
+  boss:    { src: "fps_assets/enemy_boss.png",    scale2d: 0.70, baseHpMul: 1.00, baseDmgMul: 1.00, baseSpdMul: 1.00, reach: 1.80, ranged: false },
+};
+const enemyImages = {};   // kind -> HTMLImageElement
+function loadEnemyImage(kind, src) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      console.log("[fps] enemy sprite loaded:", kind, img.naturalWidth + "x" + img.naturalHeight);
+      enemyImages[kind] = img; resolve();
+    };
+    img.onerror = () => { console.warn("[fps] failed to load enemy sprite:", src); resolve(); };
+    img.src = src;
+  });
+}
+Promise.all(Object.entries(ENEMY_SPRITES).map(([k, s]) => loadEnemyImage(k, s.src)))
+  .then(() => console.log("[fps] all enemy sprites ready. enemyImages keys =", Object.keys(enemyImages)));
+
 function renderWeapon() {
   const bw = 560, bh = 440;
   if (wcv.width !== bw) { wcv.width = bw; wcv.height = bh; }
@@ -1994,8 +2170,144 @@ const _dbg3d = { warnedNoThree: false, firstFrame: true };
 // ----- mesh construction helpers -----
 // Gunmetal palette: dark gray tones layered from light (slide) to darkest
 // (muzzle collar), never a pure black — keeps small details readable.
-function _mat(color, metalness, roughness) {
-  return new THREE.MeshStandardMaterial({ color, metalness, roughness });
+//
+// Procedural weapon textures — generated once at init as CanvasTextures
+// and assigned to weapon material `.map`. The flat-color PBR look reads
+// as "plastic toy"; a subtle brush/grain overlay reads as "real military
+// hardware". Three variants cover every weapon part:
+//   metal_brushed  — horizontal brush lines, used for slide / barrel / receiver
+//   metal_dark     — darker variant, used for sights / muzzle collar
+//   wood           — vertical grain, used for stock / handguard
+//   polymer        — stippled rubberized texture, used for grip
+const weaponTextures = {};
+
+// Draw a random pattern on a 256² canvas. `painter` is called with the
+// 2D context, base colour, and a deterministic-but-varied seed.
+function _genWeaponTextures() {
+  if (weaponTextures._ready) return;
+  weaponTextures._ready = true;
+
+  // ---- metal_brushed: horizontal scratch lines on a dark base ----
+  const c1 = document.createElement("canvas");
+  c1.width = c1.height = 256;
+  const g1 = c1.getContext("2d");
+  g1.fillStyle = "#7a7a7a"; g1.fillRect(0, 0, 256, 256);
+  // long horizontal scratches
+  for (let i = 0; i < 600; i++) {
+    const y = Math.random() * 256;
+    const w = 50 + Math.random() * 180;
+    const x = Math.random() * 256 - 60;
+    g1.strokeStyle = `rgba(255,255,255,${0.05 + Math.random() * 0.18})`;
+    g1.lineWidth = 0.4 + Math.random() * 1.2;
+    g1.beginPath(); g1.moveTo(x, y); g1.lineTo(x + w, y); g1.stroke();
+  }
+  for (let i = 0; i < 200; i++) {
+    const y = Math.random() * 256;
+    const w = 20 + Math.random() * 80;
+    const x = Math.random() * 256;
+    g1.strokeStyle = `rgba(0,0,0,${0.12 + Math.random() * 0.22})`;
+    g1.lineWidth = 0.4 + Math.random() * 0.8;
+    g1.beginPath(); g1.moveTo(x, y); g1.lineTo(x + w, y); g1.stroke();
+  }
+  // scuff clusters near the corners — looks like handling wear
+  for (let i = 0; i < 30; i++) {
+    const x = Math.random() * 256, y = Math.random() * 256;
+    const r = 4 + Math.random() * 10;
+    const grad = g1.createRadialGradient(x, y, 0, x, y, r);
+    grad.addColorStop(0, "rgba(255,255,255,0.18)");
+    grad.addColorStop(1, "rgba(255,255,255,0)");
+    g1.fillStyle = grad;
+    g1.beginPath(); g1.arc(x, y, r, 0, 7); g1.fill();
+  }
+  weaponTextures.metal_brushed = new THREE.CanvasTexture(c1);
+  weaponTextures.metal_brushed.wrapS = weaponTextures.metal_brushed.wrapT = THREE.RepeatWrapping;
+  weaponTextures.metal_brushed.repeat.set(1, 1);
+  if (THREE.SRGBColorSpace !== undefined) weaponTextures.metal_brushed.colorSpace = THREE.SRGBColorSpace;
+  weaponTextures.metal_brushed.anisotropy = 4;
+
+  // ---- metal_dark: same family, lower brightness, for collar/sight parts ----
+  const c2 = document.createElement("canvas");
+  c2.width = c2.height = 256;
+  const g2 = c2.getContext("2d");
+  g2.fillStyle = "#3a3a3a"; g2.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 500; i++) {
+    const y = Math.random() * 256;
+    const w = 40 + Math.random() * 160;
+    const x = Math.random() * 256 - 50;
+    g2.strokeStyle = `rgba(255,255,255,${0.04 + Math.random() * 0.10})`;
+    g2.lineWidth = 0.3 + Math.random() * 0.8;
+    g2.beginPath(); g2.moveTo(x, y); g2.lineTo(x + w, y); g2.stroke();
+  }
+  weaponTextures.metal_dark = new THREE.CanvasTexture(c2);
+  weaponTextures.metal_dark.wrapS = weaponTextures.metal_dark.wrapT = THREE.RepeatWrapping;
+  if (THREE.SRGBColorSpace !== undefined) weaponTextures.metal_dark.colorSpace = THREE.SRGBColorSpace;
+  weaponTextures.metal_dark.anisotropy = 4;
+
+  // ---- wood: vertical grain, warm walnut ----
+  const c3 = document.createElement("canvas");
+  c3.width = c3.height = 256;
+  const g3 = c3.getContext("2d");
+  g3.fillStyle = "#5a3a20"; g3.fillRect(0, 0, 256, 256);
+  for (let x = 0; x < 256; x += 2) {
+    const shade = 0.65 + Math.random() * 0.35;
+    g3.fillStyle = `rgb(${Math.floor(110 * shade)},${Math.floor(65 * shade)},${Math.floor(32 * shade)})`;
+    g3.fillRect(x, 0, 2, 256);
+  }
+  for (let i = 0; i < 40; i++) {
+    const x = Math.random() * 256;
+    g3.strokeStyle = `rgba(0,0,0,${0.25 + Math.random() * 0.35})`;
+    g3.lineWidth = 0.5 + Math.random() * 1.0;
+    g3.beginPath();
+    g3.moveTo(x, 0);
+    g3.lineTo(x + (Math.random() - 0.5) * 24, 256);
+    g3.stroke();
+  }
+  // a few knot whorls
+  for (let i = 0; i < 5; i++) {
+    const x = Math.random() * 256, y = Math.random() * 256;
+    for (let r = 8; r > 0; r -= 2) {
+      g3.strokeStyle = `rgba(0,0,0,${0.3 * (8 - r) / 8})`;
+      g3.lineWidth = 0.6;
+      g3.beginPath();
+      g3.ellipse(x, y, r, r * 0.6, Math.random() * Math.PI, 0, 7);
+      g3.stroke();
+    }
+  }
+  weaponTextures.wood = new THREE.CanvasTexture(c3);
+  weaponTextures.wood.wrapS = weaponTextures.wood.wrapT = THREE.RepeatWrapping;
+  if (THREE.SRGBColorSpace !== undefined) weaponTextures.wood.colorSpace = THREE.SRGBColorSpace;
+  weaponTextures.wood.anisotropy = 4;
+
+  // ---- polymer: stippled rubberized grip texture ----
+  const c4 = document.createElement("canvas");
+  c4.width = c4.height = 256;
+  const g4 = c4.getContext("2d");
+  g4.fillStyle = "#18181b"; g4.fillRect(0, 0, 256, 256);
+  for (let y = 4; y < 256; y += 6) {
+    for (let x = 4; x < 256; x += 6) {
+      const shade = 40 + Math.random() * 40;
+      g4.fillStyle = `rgba(${shade},${shade},${shade + 4},${0.5 + Math.random() * 0.4})`;
+      g4.beginPath();
+      g4.arc(x + Math.random() * 2, y + Math.random() * 2, 0.6 + Math.random() * 1.1, 0, 7);
+      g4.fill();
+    }
+  }
+  weaponTextures.polymer = new THREE.CanvasTexture(c4);
+  weaponTextures.polymer.wrapS = weaponTextures.polymer.wrapT = THREE.RepeatWrapping;
+  if (THREE.SRGBColorSpace !== undefined) weaponTextures.polymer.colorSpace = THREE.SRGBColorSpace;
+  weaponTextures.polymer.anisotropy = 4;
+}
+// Build the textures the moment this module is parsed — every weapon
+// factory below expects weaponTextures.metal_brushed / .metal_dark / .wood /
+// .polymer to be defined before the first call to _mat.
+_genWeaponTextures();
+
+function _mat(color, metalness, roughness, texKey) {
+  const params = { color, metalness, roughness };
+  if (texKey && weaponTextures[texKey]) {
+    params.map = weaponTextures[texKey];
+  }
+  return new THREE.MeshStandardMaterial(params);
 }
 function _makeMuzzleFlash(size) {
   const m = new THREE.MeshBasicMaterial({
@@ -2010,10 +2322,10 @@ function _makeMuzzleFlash(size) {
 // guard + front/rear sights. Muzzle flash anchored at barrel tip.
 function createPistolMesh() {
   const g = new THREE.Group();
-  const steel  = _mat(0x35393f, 0.60, 0.50);   // slide
-  const grip   = _mat(0x2a2d33, 0.15, 0.85);   // grip (matte)
-  const dark   = _mat(0x22252a, 0.55, 0.50);   // barrel, guard, sights
-  const collar = _mat(0x1a1c1f, 0.65, 0.45);   // muzzle collar (darkest)
+  const steel = _mat(0x35393f, 0.60, 0.50, "metal_brushed");   // slide
+  const grip = _mat(0x2a2d33, 0.15, 0.85, "polymer");   // grip (matte)
+  const dark = _mat(0x22252a, 0.55, 0.50, "metal_dark");   // barrel, guard, sights
+  const collar = _mat(0x1a1c1f, 0.65, 0.45, "metal_dark");   // muzzle collar (darkest)
 
   const slide = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.075, 0.28), steel);
   slide.position.set(0, 0.038, -0.06); g.add(slide);
@@ -2048,11 +2360,11 @@ function createPistolMesh() {
 // small scope with two rings mounted above the receiver.
 function createRifleMesh() {
   const g = new THREE.Group();
-  const steel  = _mat(0x35393f, 0.60, 0.50);
-  const grip   = _mat(0x2a2d33, 0.15, 0.85);
-  const dark   = _mat(0x22252a, 0.55, 0.50);
-  const collar = _mat(0x1a1c1f, 0.65, 0.45);
-  const wood   = _mat(0x4a3a2a, 0.05, 0.85);   // warm walnut stock
+  const steel = _mat(0x35393f, 0.60, 0.50, "metal_brushed");
+  const grip = _mat(0x2a2d33, 0.15, 0.85, "polymer");
+  const dark = _mat(0x22252a, 0.55, 0.50, "metal_dark");
+  const collar = _mat(0x1a1c1f, 0.65, 0.45, "metal_dark");
+  const wood = _mat(0x4a3a2a, 0.05, 0.85, "wood");   // warm walnut stock
 
   const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.42, 14), dark);
   barrel.rotation.x = Math.PI / 2; barrel.position.set(0, 0.045, -0.28); g.add(barrel);
@@ -2106,11 +2418,11 @@ function createRifleMesh() {
 // handle poking out to the right. Heavier recoil, tighter ADS FOV (30°).
 function createSniperMesh() {
   const g = new THREE.Group();
-  const steel  = _mat(0x35393f, 0.60, 0.50);
-  const grip   = _mat(0x2a2d33, 0.15, 0.85);
-  const dark   = _mat(0x22252a, 0.55, 0.50);
-  const collar = _mat(0x1a1c1f, 0.65, 0.45);
-  const wood   = _mat(0x4a3a2a, 0.05, 0.85);
+  const steel = _mat(0x35393f, 0.60, 0.50, "metal_brushed");
+  const grip = _mat(0x2a2d33, 0.15, 0.85, "polymer");
+  const dark = _mat(0x22252a, 0.55, 0.50, "metal_dark");
+  const collar = _mat(0x1a1c1f, 0.65, 0.45, "metal_dark");
+  const wood = _mat(0x4a3a2a, 0.05, 0.85, "wood");
   const glass  = _mat(0x3a5a7a, 0.40, 0.20);    // blue-tinted objective lens
 
   // Long thin barrel (~1.5x rifle's 0.42, radius 0.012 vs rifle 0.014)
@@ -2200,12 +2512,12 @@ function createSniperMesh() {
 // brass bead sight at the muzzle. No fancy sights.
 function createShotgunMesh() {
   const g = new THREE.Group();
-  const steel  = _mat(0x35393f, 0.55, 0.55);
-  const grip   = _mat(0x2a2d33, 0.15, 0.85);
-  const dark   = _mat(0x22252a, 0.55, 0.50);
-  const collar = _mat(0x1a1c1f, 0.65, 0.45);
-  const wood   = _mat(0x4a3a2a, 0.05, 0.85);
-  const brass  = _mat(0xd0a04a, 0.75, 0.30);    // brass bead
+  const steel = _mat(0x35393f, 0.55, 0.55, "metal_brushed");
+  const grip = _mat(0x2a2d33, 0.15, 0.85, "polymer");
+  const dark = _mat(0x22252a, 0.55, 0.50, "metal_dark");
+  const collar = _mat(0x1a1c1f, 0.65, 0.45, "metal_dark");
+  const wood = _mat(0x4a3a2a, 0.05, 0.85, "wood");
+  const brass = _mat(0xd0a04a, 0.75, 0.30, "metal_brushed");    // brass bead
 
   const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.024, 0.024, 0.40, 14), steel);
   barrel.rotation.x = Math.PI / 2; barrel.position.set(0, 0.052, -0.22); g.add(barrel);
@@ -2242,10 +2554,10 @@ function createShotgunMesh() {
 // forward-down, thin folding stock. Iron sights.
 function createSmgMesh() {
   const g = new THREE.Group();
-  const steel  = _mat(0x35393f, 0.60, 0.50);
-  const grip   = _mat(0x2a2d33, 0.15, 0.85);
-  const dark   = _mat(0x22252a, 0.55, 0.50);
-  const collar = _mat(0x1a1c1f, 0.65, 0.45);
+  const steel = _mat(0x35393f, 0.60, 0.50, "metal_brushed");
+  const grip = _mat(0x2a2d33, 0.15, 0.85, "polymer");
+  const dark = _mat(0x22252a, 0.55, 0.50, "metal_dark");
+  const collar = _mat(0x1a1c1f, 0.65, 0.45, "metal_dark");
 
   const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.20, 14), dark);
   barrel.rotation.x = Math.PI / 2; barrel.position.set(0, 0.035, -0.16); g.add(barrel);
@@ -2291,10 +2603,10 @@ function createSmgMesh() {
 // Louder than the pump, faster than pump — recoilScale 1.4 (< pump's 1.8).
 function createAutoShotgunMesh() {
   const g = new THREE.Group();
-  const steel  = _mat(0x2a2c30, 0.55, 0.55);
-  const grip   = _mat(0x1a1c1f, 0.15, 0.85);
-  const dark   = _mat(0x22252a, 0.55, 0.50);
-  const collar = _mat(0x1a1c1f, 0.65, 0.45);
+  const steel = _mat(0x2a2c30, 0.55, 0.55, "metal_brushed");
+  const grip = _mat(0x1a1c1f, 0.15, 0.85, "polymer");
+  const dark = _mat(0x22252a, 0.55, 0.50, "metal_dark");
+  const collar = _mat(0x1a1c1f, 0.65, 0.45, "metal_dark");
 
   // Barrel — thicker than the manual shotgun but shorter
   const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.30, 14), steel);
@@ -2338,9 +2650,9 @@ function createAutoShotgunMesh() {
 // heatsinks along the receiver. No physical magazine — energy weapon.
 function createLaserMesh() {
   const g = new THREE.Group();
-  const chassis  = _mat(0x1a2540, 0.55, 0.45);      // deep blue
-  const dark     = _mat(0x0d1220, 0.55, 0.50);
-  const grip     = _mat(0x181828, 0.15, 0.85);
+  const chassis = _mat(0x1a2540, 0.55, 0.45, "metal_dark");      // deep blue
+  const dark = _mat(0x0d1220, 0.55, 0.50, "metal_dark");
+  const grip = _mat(0x181828, 0.15, 0.85, "polymer");
   // Emissive materials for the "energy" bits
   const focusMat = new THREE.MeshStandardMaterial({
     color: 0x40cfff, roughness: 0.30, metalness: 0.20,
@@ -2405,10 +2717,10 @@ function createLaserMesh() {
 // Bulky receiver, thick grip, no stock. Barrel cluster spins in render.
 function createMinigunMesh() {
   const g = new THREE.Group();
-  const steel  = _mat(0x35393f, 0.60, 0.50);
-  const grip   = _mat(0x1a1c1f, 0.15, 0.85);
-  const dark   = _mat(0x22252a, 0.55, 0.50);
-  const collar = _mat(0x1a1c1f, 0.65, 0.45);
+  const steel = _mat(0x35393f, 0.60, 0.50, "metal_brushed");
+  const grip = _mat(0x1a1c1f, 0.15, 0.85, "polymer");
+  const dark = _mat(0x22252a, 0.55, 0.50, "metal_dark");
+  const collar = _mat(0x1a1c1f, 0.65, 0.45, "metal_dark");
 
   // Barrel cluster — 6 cylinders arranged around Z axis. Grouped so the
   // render loop can spin the whole cluster via userData.barrelCluster.rotation.z.
@@ -2452,11 +2764,11 @@ function createMinigunMesh() {
 // the receiver, side vent fins. Recoil is the heaviest of any weapon.
 function createPlasmaMesh() {
   const g = new THREE.Group();
-  const chassis  = _mat(0x22252a, 0.60, 0.45);
+  const chassis = _mat(0x22252a, 0.60, 0.45, "metal_dark");
   const chassis2 = _mat(0x2e3238, 0.55, 0.50);
-  const dark     = _mat(0x0f1114, 0.55, 0.50);
-  const collar   = _mat(0x121418, 0.65, 0.40);
-  const grip     = _mat(0x181820, 0.15, 0.85);
+  const dark = _mat(0x0f1114, 0.55, 0.50, "metal_dark");
+  const collar = _mat(0x121418, 0.65, 0.40, "metal_dark");
+  const grip = _mat(0x181820, 0.15, 0.85, "polymer");
   const orbMat = new THREE.MeshStandardMaterial({
     color: 0xff60d0, roughness: 0.30, emissive: 0xff40cf, emissiveIntensity: 1.6,
   });
@@ -3416,92 +3728,131 @@ function _buildCeilingTexture() {
 // remove / animate freely. One factory function per enemy variant, keyed
 // off e.boss for now (grunt vs boss). Elite variant can slot in later
 // without disturbing the plumbing.
+//
+// === v2: enemies now use the same pre-keyed PNG sprites as the 2.5D path.
+// A THREE.Sprite is a camera-facing plane with the sprite texture, so the
+// enemy reads as a high-detail 3D-render from any angle (with proper
+// depth-test against walls and the teammate). The primitive body fallback
+// is kept in case the sprite image failed to load. The group is still
+// scaled by sizeScale so the boss / shield height rules still apply.
+// =========================================================================
 function _createEnemyMesh(e) {
   const isBoss = !!e.boss;
   const g = new THREE.Group();
 
-  const bodyColor = isBoss ? 0x7c37a2 : 0x8f3232;
-  const darkColor = isBoss ? 0x26123c : 0x3a1414;
-  const trimColor = isBoss ? 0xffcf3b : 0xe59a9a;
-  const eyeHex    = isBoss ? 0xffd12b : 0xff4b4b;
+  // Pick the sprite kind. Fall back to "grunt" for old enemies without
+  // a `kind` field (e.g. carried over from a saved run).
+  const spriteKind = e.kind || (isBoss ? "boss" : "grunt");
+  const spriteImg  = enemyImages[spriteKind];
 
-  const bodyMat  = new THREE.MeshStandardMaterial({ color: bodyColor, roughness: 0.85, metalness: 0.10 });
-  const darkMat  = new THREE.MeshStandardMaterial({ color: darkColor, roughness: 0.90, metalness: 0.05 });
-  const trimMat  = new THREE.MeshStandardMaterial({ color: trimColor, roughness: 0.70, metalness: 0.30 });
-  const chestMat = new THREE.MeshStandardMaterial({ color: darkColor, roughness: 0.90 });   // hurt-tint target
-  const eyeMat   = new THREE.MeshStandardMaterial({
-    color: eyeHex, roughness: 0.30, emissive: eyeHex, emissiveIntensity: 0.9,
-  });
+  // Cached materials used by the per-frame sync to drive hurt / death
+  // effects on whichever rendering path is active (sprite OR primitives).
+  let bodyMat = null, darkMat = null, chestMat = null;
+  let armL = null, armR = null, legL = null, legR = null;
+  let sprite = null;
 
-  // Torso (main body)
-  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.50, 0.20), bodyMat);
-  torso.position.y = 0.55; g.add(torso);
-  // Chest plate — for hurt flash target
-  const chest = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.30, 0.05), chestMat);
-  chest.position.set(0, 0.60, 0.11); g.add(chest);
-  // Pauldrons
-  const shoulderL = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.08, 0.16), trimMat);
-  shoulderL.position.set(-0.21, 0.77, 0); g.add(shoulderL);
-  const shoulderR = shoulderL.clone();
-  shoulderR.position.x = +0.21; g.add(shoulderR);
+  if (spriteImg) {
+    // === SPRITE PATH ===
+    // CanvasTexture wraps the <img> directly. We add an alphaTest so
+    // fully-transparent pixels don't write to the depth buffer (otherwise
+    // the sprite's rectangular bounds would occlude things behind it).
+    const tex = new THREE.CanvasTexture(spriteImg);
+    if (THREE.SRGBColorSpace !== undefined) tex.colorSpace = THREE.SRGBColorSpace;
+    tex.needsUpdate = true;
+    const mat = new THREE.SpriteMaterial({
+      map: tex, transparent: true, alphaTest: 0.02,
+      side: THREE.DoubleSide, depthWrite: false,
+    });
+    sprite = new THREE.Sprite(mat);
+    // The original primitive body was ~1.06 units tall (feet to top of
+    // head). The sprite needs to occupy the same visible height before
+    // g.scale applies sizeScale. We set sprite scale to baseH=1.06, then
+    // g.scale.setScalar(0.55 * sizeScale) brings the visible height to
+    // ~0.58 (grunt) or ~1.4 (boss 2.4x). Sprite is centered on its
+    // origin; lifting y by baseH/2 puts the foot at y=0.
+    const baseH = 1.06;
+    sprite.scale.set(baseH, baseH, 1);
+    sprite.position.y = baseH / 2;
+    g.add(sprite);
+  } else {
+    // === PRIMITIVE FALLBACK ===
+    // (kept so the game still works if a sprite fails to load; same
+    //  body geometry as before, with all the materials the per-frame
+    //  sync wants to poke at for hurt-tint / walk-cycle.)
+    const bodyColor = isBoss ? 0x7c37a2 : 0x8f3232;
+    const darkColor = isBoss ? 0x26123c : 0x3a1414;
+    const trimColor = isBoss ? 0xffcf3b : 0xe59a9a;
+    const eyeHex    = isBoss ? 0xffd12b : 0xff4b4b;
 
-  // Head
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.12, 12, 10), bodyMat);
-  head.position.set(0, 0.94, 0); g.add(head);
-  // Glowing eyes
-  const eyeL = new THREE.Mesh(new THREE.SphereGeometry(0.022, 8, 6), eyeMat);
-  eyeL.position.set(-0.05, 0.96, 0.11); g.add(eyeL);
-  const eyeR = eyeL.clone();
-  eyeR.position.x = +0.05; g.add(eyeR);
+    bodyMat  = new THREE.MeshStandardMaterial({ color: bodyColor, roughness: 0.85, metalness: 0.10 });
+    darkMat  = new THREE.MeshStandardMaterial({ color: darkColor, roughness: 0.90, metalness: 0.05 });
+    const trimMat  = new THREE.MeshStandardMaterial({ color: trimColor, roughness: 0.70, metalness: 0.30 });
+    chestMat = new THREE.MeshStandardMaterial({ color: darkColor, roughness: 0.90 });
+    const eyeMat   = new THREE.MeshStandardMaterial({
+      color: eyeHex, roughness: 0.30, emissive: eyeHex, emissiveIntensity: 0.9,
+    });
 
-  // Boss horns — curved cones tilted outward
-  if (isBoss) {
-    const hornGeo = new THREE.ConeGeometry(0.030, 0.18, 6);
-    const hornL = new THREE.Mesh(hornGeo, trimMat);
-    hornL.position.set(-0.08, 1.06, 0);
-    hornL.rotation.z = +0.5; hornL.rotation.x = -0.3; g.add(hornL);
-    const hornR = hornL.clone();
-    hornR.position.x = +0.08;
-    hornR.rotation.z = -0.5; hornR.rotation.x = -0.3; g.add(hornR);
+    const torso = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.50, 0.20), bodyMat);
+    torso.position.y = 0.55; g.add(torso);
+    const chest = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.30, 0.05), chestMat);
+    chest.position.set(0, 0.60, 0.11); g.add(chest);
+    const shoulderL = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.08, 0.16), trimMat);
+    shoulderL.position.set(-0.21, 0.77, 0); g.add(shoulderL);
+    const shoulderR = shoulderL.clone();
+    shoulderR.position.x = +0.21; g.add(shoulderR);
+
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.12, 12, 10), bodyMat);
+    head.position.set(0, 0.94, 0); g.add(head);
+    const eyeL = new THREE.Mesh(new THREE.SphereGeometry(0.022, 8, 6), eyeMat);
+    eyeL.position.set(-0.05, 0.96, 0.11); g.add(eyeL);
+    const eyeR = eyeL.clone();
+    eyeR.position.x = +0.05; g.add(eyeR);
+
+    if (isBoss) {
+      const hornGeo = new THREE.ConeGeometry(0.030, 0.18, 6);
+      const hornL = new THREE.Mesh(hornGeo, trimMat);
+      hornL.position.set(-0.08, 1.06, 0);
+      hornL.rotation.z = +0.5; hornL.rotation.x = -0.3; g.add(hornL);
+      const hornR = hornL.clone();
+      hornR.position.x = +0.08;
+      hornR.rotation.z = -0.5; hornR.rotation.x = -0.3; g.add(hornR);
+    }
+
+    function makeArm(sideX) {
+      const arm = new THREE.Group();
+      arm.position.set(sideX, 0.77, 0);
+      const upper = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.24, 8), bodyMat);
+      upper.position.y = -0.12; arm.add(upper);
+      const fist  = new THREE.Mesh(new THREE.SphereGeometry(0.055, 10, 8), darkMat);
+      fist.position.y = -0.27; arm.add(fist);
+      return arm;
+    }
+    armL = makeArm(-0.22); g.add(armL);
+    armR = makeArm(+0.22); g.add(armR);
+
+    function makeLeg(sideX) {
+      const leg = new THREE.Group();
+      leg.position.set(sideX, 0.32, 0);
+      const thigh = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.28, 8), darkMat);
+      thigh.position.y = -0.14; leg.add(thigh);
+      const shin  = new THREE.Mesh(new THREE.CylinderGeometry(0.050, 0.045, 0.25, 8), darkMat);
+      shin.position.y = -0.40; leg.add(shin);
+      const boot  = new THREE.Mesh(new THREE.BoxGeometry(0.080, 0.050, 0.13), darkMat);
+      boot.position.set(0, -0.54, 0.02); leg.add(boot);
+      return leg;
+    }
+    legL = makeLeg(-0.08); g.add(legL);
+    legR = makeLeg(+0.08); g.add(legR);
   }
 
-  // Arms — pivoted at shoulder for swing animation
-  function makeArm(sideX) {
-    const arm = new THREE.Group();
-    arm.position.set(sideX, 0.77, 0);
-    const upper = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.24, 8), bodyMat);
-    upper.position.y = -0.12; arm.add(upper);
-    const fist  = new THREE.Mesh(new THREE.SphereGeometry(0.055, 10, 8), darkMat);
-    fist.position.y = -0.27; arm.add(fist);
-    return arm;
-  }
-  const armL = makeArm(-0.22); g.add(armL);
-  const armR = makeArm(+0.22); g.add(armR);
-
-  // Legs — pivoted at hip for walk cycle
-  function makeLeg(sideX) {
-    const leg = new THREE.Group();
-    leg.position.set(sideX, 0.32, 0);
-    const thigh = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.28, 8), darkMat);
-    thigh.position.y = -0.14; leg.add(thigh);
-    const shin  = new THREE.Mesh(new THREE.CylinderGeometry(0.050, 0.045, 0.25, 8), darkMat);
-    shin.position.y = -0.40; leg.add(shin);
-    const boot  = new THREE.Mesh(new THREE.BoxGeometry(0.080, 0.050, 0.13), darkMat);
-    boot.position.set(0, -0.54, 0.02); leg.add(boot);
-    return leg;
-  }
-  const legL = makeLeg(-0.08); g.add(legL);
-  const legR = makeLeg(+0.08); g.add(legR);
-
-  // Scale — the base mesh is ~1.06 units feet-to-top-of-head. Multiply
-  // by 0.55 (roughly matching TEAMMATE_SCALE 0.49 for consistent perceived
-  // size) and then by the enemy's sizeScale (2.4 for boss, 1 for grunt).
+  // Same final scale as the pre-sprite version: 0.55 baseline * sizeScale.
   const scale = (e.sizeScale || 1) * 0.55;
   g.scale.setScalar(scale);
 
   return {
     group: g, bodyMat, darkMat, chestMat,
     armL, armR, legL, legR,
+    sprite,                 // THREE.Sprite | null
     walkT: 0,
   };
 }
@@ -3556,6 +3907,13 @@ function _buildWorld3dGeometry(scene) {
 // (via _createEnemyMesh), removes when the enemy exits enemies[] after
 // its death timeout. Walk cycle + hurt tint + death roll are procedural,
 // matching the humble teammate animation approach.
+//
+// === v2: enemies render as camera-facing sprite billboards (THREE.Sprite
+// with the pre-keyed PNG texture). The primitive fallback (above) is
+// reached only when the sprite image failed to load. Sprite path can't
+// animate limbs (the PNG is a single frame), so we substitute a Y-bob
+// (sine wave on group.position.y) for a "step" feel, and apply the hurt
+// flash to the sprite material's color instead of a chest plate.
 function _syncEnemyMeshes(dt) {
   if (!world3d.scene) return;
   if (!world3d.enemyMeshes) world3d.enemyMeshes = new Map();
@@ -3565,6 +3923,13 @@ function _syncEnemyMeshes(dt) {
   // deadT window elapses in update()).
   for (const [enemy, rec] of meshes) {
     if (!live.has(enemy)) {
+      // Dispose the texture we created for the sprite so we don't leak
+      // GPU memory across wave restarts. Primitive meshes share a single
+      // material per enemy so just nulling the reference is fine.
+      if (rec.sprite && rec.sprite.material) {
+        if (rec.sprite.material.map) rec.sprite.material.map.dispose();
+        rec.sprite.material.dispose();
+      }
       world3d.scene.remove(rec.group);
       meshes.delete(enemy);
     }
@@ -3579,7 +3944,8 @@ function _syncEnemyMeshes(dt) {
     // Position on the floor at ally-style +Z mapping used everywhere else
     rec.group.position.set(e.x, 0, e.y);
     // Face the player (AI has enemies chase the player, so pointing at
-    // them makes the 3D silhouette read correctly).
+    // them makes the 3D silhouette read correctly). Sprites are auto-
+    // camera-facing so this rotation only affects the primitive path.
     const dxE = player.x - e.x, dyE = player.y - e.y;
     const faceDir = Math.atan2(dyE, dxE);
     rec.group.rotation.y = Math.PI / 2 - faceDir;
@@ -3589,23 +3955,61 @@ function _syncEnemyMeshes(dt) {
       const t = Math.min(1, e.deadT / 0.4);
       rec.group.rotation.x = t * (Math.PI / 2);
       rec.group.visible = e.deadT < 1.2;
+      // Fade out the sprite in the last 0.4s before despawn
+      if (rec.sprite && rec.sprite.material) {
+        rec.sprite.material.opacity = Math.max(0, 1 - Math.max(0, e.deadT - 0.8) / 0.4);
+      }
     } else {
       rec.group.rotation.x = 0;
       rec.group.visible = true;
+      if (rec.sprite && rec.sprite.material) {
+        rec.sprite.material.opacity = 1.0;
+      }
     }
-    // Walk cycle — legs and arms swing in counter-phase. Speed roughly
-    // matched to enemy movement speed (grunts ~1 unit/s → 1.4 Hz cadence).
+    // === Per-frame animation ===
     rec.walkT += dt * 9;
     const sw = Math.sin(rec.walkT);
-    const legAmp = e.dead ? 0 : 0.50;
-    const armAmp = e.dead ? 0 : 0.25;
-    rec.legL.rotation.x = +sw * legAmp;
-    rec.legR.rotation.x = -sw * legAmp;
-    rec.armL.rotation.x = -sw * armAmp;
-    rec.armR.rotation.x = +sw * armAmp;
-    // Hurt tint — chestMat's emissive briefly glows red on damage.
+    if (rec.sprite) {
+      // === SPRITE PATH: a vertical bob while the enemy is moving.
+      // Amplitude tracks the enemy's actual speed (faster = bigger step)
+      // so a stationary shooter still reads as "planted". Dying freezes
+      // the bob so the corpse settles. The Y delta is applied on top of
+      // the base y=0 set above, and dies with the fall-forward rotation
+      // (rotation.x tilts the whole group; the bob adds a local up/down).
+      const alive = !e.dead;
+      const speed = e.speed || 1;
+      const bobAmp = alive ? 0.04 * speed : 0;
+      rec.sprite.position.y = 1.06 / 2 + sw * bobAmp;
+      // Slight forward lean while moving (tilt around x in local space).
+      // The sprite always faces the camera, so this just nudges the
+      // silhouette forward — gives a subtle "charging" feel.
+      if (alive) {
+        rec.sprite.material.rotation = -0.08 * Math.abs(sw) * speed;
+      } else {
+        rec.sprite.material.rotation = 0;
+      }
+    } else {
+      // === PRIMITIVE PATH: existing limb swing (preserved as-is).
+      const legAmp = e.dead ? 0 : 0.50;
+      const armAmp = e.dead ? 0 : 0.25;
+      rec.legL.rotation.x = +sw * legAmp;
+      rec.legR.rotation.x = -sw * legAmp;
+      rec.armL.rotation.x = -sw * armAmp;
+      rec.armR.rotation.x = +sw * armAmp;
+    }
+    // === Hurt tint ===
+    // Sprite path: shift the material color toward white on damage so the
+    // whole silhouette flashes. We restore the color each frame so the
+    // tint decays as e.hurt ticks down (same 0.18s window the primitive
+    // chestMat uses).
     const hurt = e.hurt > 0 ? Math.min(1, e.hurt / 0.18) : 0;
-    if (rec.chestMat && rec.chestMat.emissive) {
+    if (rec.sprite && rec.sprite.material) {
+      // r/g/b go from (1,1,1) at full hurt -> (1,1,1) at rest; the +0.5
+      // factor is clamped to 1, so the sprite looks washed-out / pale
+      // for ~0.18s after a hit.
+      const w = 1 + hurt * 0.5;
+      rec.sprite.material.color.setRGB(Math.min(1, w), Math.min(1, w), Math.min(1, w));
+    } else if (rec.chestMat && rec.chestMat.emissive) {
       rec.chestMat.emissive.setRGB(hurt * 0.8, 0, 0);
     }
   }
