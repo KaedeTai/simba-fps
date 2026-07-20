@@ -145,7 +145,18 @@
      land above the opaque #world3d canvas from Phase 2. */
   #flash { position: fixed; inset: 0; pointer-events: none; opacity: 0; transition: opacity .05s;
     z-index: 4;
-    background: radial-gradient(circle at 50% 62%, rgba(255,220,120,.9), rgba(255,150,40,0) 45%); }
+    background: radial-gradient(circle at 50% 62%,
+      rgba(255,240,160,0.95) 0%,
+      rgba(255,180,60,0.55) 18%,
+      rgba(255,100,30,0.25) 38%,
+      rgba(255,150,40,0) 55%); }
+  /* Hit-flash on the crosshair: when a pellet lands, the crosshair briefly
+     turns yellow/orange to confirm a hit. JS toggles the .hit class
+     for ~120ms. */
+  #crosshair.hit::before, #crosshair.hit::after {
+    background: rgba(255,230,90,.95) !important;
+    box-shadow: 0 0 8px rgba(255,180,40,.9) !important;
+  }
   /* Damage vignette: a radial-gradient background (painted once) whose opacity we animate.
      The old inset box-shadow re-blurred the whole viewport every frame and tanked FPS. */
   #hurt  { position: fixed; inset: 0; pointer-events: none; opacity: 0;

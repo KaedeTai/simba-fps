@@ -1226,6 +1226,15 @@ function tryShoot() {
       // in drawEnemy from the enemy's `damagePopups` array.
       if (!best.damagePopups) best.damagePopups = [];
       best.damagePopups.push({ value: weapon.damage, life: 0.9, maxLife: 0.9, drift: 0 });
+      // === Crosshair hit-flash: brief yellow tint on the crosshair
+      // so the player gets immediate "I hit it" feedback even before
+      // the damage popup drifts up.
+      const ch = $("crosshair");
+      if (ch) {
+        ch.classList.add("hit");
+        clearTimeout(ch._hitT);
+        ch._hitT = setTimeout(() => ch.classList.remove("hit"), 120);
+      }
       if (best.hp <= 0 && !best.dead) {
         best.dead = true; best.deadT = 0;
         kills++; score += best.scoreVal; coins += best.reward;
