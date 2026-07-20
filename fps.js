@@ -582,12 +582,12 @@ function mapScale() { return Math.max(1, Math.round((MAP_W * MAP_H) / (22 * 22))
 
 // Pick a kind for the current wave slot. Mix shifts with wave number so
 // later waves throw harder variants at the player: early = mostly grunts,
-// mid = shields show up, late = shooters start peppering from range.
+// mid = shields + chargers show up, late = shooters start peppering.
 function pickEnemyKind() {
-  // Tiers roll up the harder kinds as the wave climbs.
   const r = Math.random();
   if (wave >= 6 && r < 0.15) return "shooter";           // 15% ranged
-  if (wave >= 3 && r < 0.40) return "shield";            // 25% tank
+  if (wave >= 4 && r < 0.30) return "charger";           // 15% fast melee
+  if (wave >= 3 && r < 0.55) return "shield";            // 25% tank
   return "grunt";                                        // 60% baseline
 }
 
@@ -2192,7 +2192,7 @@ Promise.all(Object.entries(GUN_SPRITES).map(([k, s]) => loadGunImage(k, s.src)))
 // gun sprites: magenta-bg JPEG → keyed RGBA PNG via an offline PIL pass.
 // =========================================================================
 const ENEMY_SPRITES = {
-  // kind:    one of "grunt" | "shield" | "shooter" | "boss"  (matches e.kind)
+  // kind:    one of "grunt" | "shield" | "shooter" | "charger" | "boss"  (matches e.kind)
   // src:     relative PNG path
   // scale2d: drawn size on the 2.5D canvas (image is 1024px, scale 0.5 = 512px)
   // baseHpMul / baseDmgMul / baseSpdMul: per-type stat tuning applied at spawn
@@ -2202,6 +2202,7 @@ const ENEMY_SPRITES = {
   grunt:   { src: "fps_assets/enemy_grunt.png",   scale2d: 0.48, baseHpMul: 1.00, baseDmgMul: 1.00, baseSpdMul: 1.00, reach: 1.10, ranged: false },
   shield:  { src: "fps_assets/enemy_shield.png",  scale2d: 0.52, baseHpMul: 1.80, baseDmgMul: 1.30, baseSpdMul: 0.65, reach: 1.20, ranged: false },
   shooter: { src: "fps_assets/enemy_shooter.png", scale2d: 0.52, baseHpMul: 0.60, baseDmgMul: 1.20, baseSpdMul: 0.80, reach: 0.90, ranged: true  },
+  charger: { src: "fps_assets/enemy_charger.png", scale2d: 0.40, baseHpMul: 0.80, baseDmgMul: 0.80, baseSpdMul: 1.80, reach: 1.05, ranged: false },
   boss:    { src: "fps_assets/enemy_boss.png",    scale2d: 0.70, baseHpMul: 1.00, baseDmgMul: 1.00, baseSpdMul: 1.00, reach: 1.80, ranged: false },
 };
 const enemyImages = {};   // kind -> HTMLImageElement
