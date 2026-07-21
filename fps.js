@@ -426,6 +426,11 @@ function saveRun() {
         dmg: e.dmg, reward: e.reward, scoreVal: e.scoreVal,
         radius: e.radius, sizeScale: e.sizeScale, boss: !!e.boss,
         reach: e.reach, enraged: !!e.enraged,
+        // kind/ranged: persisted so a reload doesn't fall back every enemy
+        // to the default sprite. Without this, save → reload → next frame
+        // would render all loaded enemies as the grunt silhouette and the
+        // visual variety disappears until the next wave spawn.
+        kind: e.kind || "grunt", ranged: !!e.ranged,
         dead: !!e.dead, deadT: e.deadT || 0,
       })),
       score, wave, kills, coins,
@@ -581,14 +586,28 @@ function findSpawn(minDist2) {
 function mapScale() { return Math.max(1, Math.round((MAP_W * MAP_H) / (22 * 22))); }
 
 // Pick a kind for the current wave slot. Mix shifts with wave number so
-// later waves throw harder variants at the player: early = mostly grunts,
-// mid = shields + chargers show up, late = shooters start peppering.
+// later waves throw harder variants at the player. All variants are
+// available from wave 1 — just rarer at low waves — so the user sees
+// visual variety immediately instead of having to grind up to wave 3+
+// before the first non-grunt shows up.
+//
+// Distribution at wave 1: ~60% grunt, ~22% charger (fast scout variant),
+// ~12% shield, ~6% shooter. By wave 8+ this settles to roughly
+// 30/25/25/20 grunt/charger/shield/shooter.
 function pickEnemyKind() {
   const r = Math.random();
-  if (wave >= 6 && r < 0.15) return "shooter";           // 15% ranged
-  if (wave >= 4 && r < 0.30) return "charger";           // 15% fast melee
-  if (wave >= 3 && r < 0.55) return "shield";            // 25% tank
-  return "grunt";                                        // 60% baseline
+  // Wave-gated probabilities: every kind is unlocked from wave 1, but
+  // their weight grows with wave number. The cumulative bands below
+  // sum to 1.0 at every wave value.
+  const t = Math.min(1, (wave - 1) / 7);   // 0 at wave 1, 1 at wave 8+
+  const pShooter = 0.05 + 0.15 * t;          //  5% → 20%
+  const pCharger = 0.20 + 0.15 * t;          // 20% → 35%
+  const pShield  = 0.15 + 0.10 * t;          // 15% → 25%
+  // pGrunt fills the rest, sliding from 60% → 20%
+  if (r < pShooter)            return "shooter";
+  if (r < pShooter + pCharger) return "charger";
+  if (r < pShooter + pCharger + pShield) return "shield";
+  return "grunt";
 }
 
 function spawnWave(n) {
@@ -658,6 +677,51 @@ addEventListener("keydown", e => {
   // reloads. saveRun's beforeunload hook preserves the current run so
   // the mode change is seamless.
   if (e.code === "F2") { e.preventDefault(); toggleWorld3dMode(); return; }
+  // === DEBUG HOTKEYS (show the visual variety) ===
+  // F3: skip to next wave (forces startWave). Lets the user jump past
+  // the wave-1 grunt grind to see shield / charger / shooter variants
+  // without playing through 6 waves of low variety. Doesn't bypass
+  // the spawn logic — pickEnemyKind still runs normally on the new
+  // wave, so you'll actually see different monsters after the skip.
+  if (e.code === "F3" && running && !gameOver) {
+    e.preventDefault();
+    for (const e2 of enemies) e2.dead = true;  // clear current wave
+    wave += 1;
+    awaitingNextWave = false;
+    startWave();
+    showBanner(`⏩ 跳到第 ${wave} 波`);
+    return;
+  }
+  // F4: force-spawn one of each enemy kind in front of the player.
+  // Use this when you want to compare all 5 silhouettes side by side
+  // without grinding waves. Spawns at random positions within 4 units.
+  if (e.code === "F4" && running && !gameOver) {
+    e.preventDefault();
+    const fwd = player.dir;
+    const cx = player.x + Math.cos(fwd) * 5;
+    const cy = player.y + Math.sin(fwd) * 5;
+    const kinds = ["grunt", "shield", "charger", "shooter"];
+    let added = 0;
+    for (const k of kinds) {
+      const cfg = ENEMY_SPRITES[k];
+      const ang = (added / kinds.length) * Math.PI * 2;
+      const px = cx + Math.cos(ang) * 2.5;
+      const py = cy + Math.sin(ang) * 2.5;
+      const hp = Math.round(40 * cfg.baseHpMul);
+      enemies.push({
+        x: px, y: py, hp, maxHp: hp,
+        speed: 0.9 * cfg.baseSpdMul,
+        dmg: 8 * cfg.baseDmgMul, reward: 25, scoreVal: 100,
+        radius: k === "shield" ? 0.55 : 0.45,
+        sizeScale: k === "shield" ? 1.25 : 1.0,
+        boss: false, kind: k, ranged: cfg.ranged,
+        fireT: 0, hurt: 0, dead: false, deadT: 0, attackCd: 0, dist: 999,
+      });
+      added++;
+    }
+    showBanner("🧪 已召喚 grunt / shield / charger / shooter (F4)");
+    return;
+  }
   // F key — keyboard equivalent of right-mouse ADS. Switched from Cmd/Meta
   // because Cmd+W (close tab) is OS-level on macOS and preventDefault
   // can't cancel it. F has no OS-level conflicts, is easy to hold with the
