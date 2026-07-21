@@ -2066,9 +2066,19 @@ function update(dt) {
       if (!isWall(e.x, e.y + ny)) e.y += ny;
     }
     if (e.attackCd > 0) e.attackCd -= dt;
+    // === Charger "lunge" ===
+    // The charger is fast and gets a visible sudden-pounce when it
+    // crosses into striking range. e.lungeT starts at 0.35, decays
+    // each frame in _syncEnemyMeshes, and during the visible window
+    // the body's Z scale is bumped so the silhouette stretches forward.
+    if (e.kind === "charger" && tdist < reach + 0.4 && tdist > reach - 0.6
+        && e.attackCd <= 0 && e.lungeT === undefined) {
+      e.lungeT = 0.35;
+      _addScreenShake(0.05);
+    }
     // === persistence: no attacks during the grace period either ===
     if (tdist < reach && sees && e.attackCd <= 0 && resumeSafetyT <= 0) {
-      e.attackCd = (e.boss ? 1.2 : 0.9) * (e.enraged ? 0.55 : 1);
+      e.attackCd = (e.boss ? 1.2 : 0.9) * (e.enraged ? 0.55 : 1) * (e.kind === "charger" ? 0.7 : 1);
       if (tgt === player) {
         player.hp -= e.dmg;
         hurtT = 0.4;
@@ -5159,6 +5169,22 @@ function _syncEnemyMeshes(dt) {
       if (rec.legFR) rec.legFR.rotation.x = -sw * legAmp;
       if (rec.legBL) rec.legBL.rotation.x = -sw * legAmp;
       if (rec.legBR) rec.legBR.rotation.x = +sw * legAmp;
+      // === Charger lunge pose ===
+      // When e.lungeT is set (one-shot in update on reaching attack
+      // range), stretch the body along its local +Z (forward) so the
+      // silhouette lunges. Decay back to normal pose.
+      if (e.lungeT && e.lungeT > 0) {
+        e.lungeT = Math.max(0, e.lungeT - dt);
+        const t = e.lungeT / 0.35;  // 1 = just-lunged, 0 = recovered
+        // Find the body group (the first Mesh child with a non-empty
+        // body color = the main torso). We just stretch the whole
+        // group along Z; visually reads as a forward pounce.
+        rec.group.scale.z = (e.sizeScale || 1) * 0.55 * (1 + t * 0.6);
+        rec.group.scale.x = (e.sizeScale || 1) * 0.55 * (1 - t * 0.1);
+      } else {
+        rec.group.scale.z = (e.sizeScale || 1) * 0.55;
+        rec.group.scale.x = (e.sizeScale || 1) * 0.55;
+      }
     } else {
       // Humanoid: legs opposite phase, arms opposite to legs.
       if (rec.legL) rec.legL.rotation.x = +sw * legAmp;
