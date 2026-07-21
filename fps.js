@@ -1938,7 +1938,15 @@ function update(dt) {
     e.dist = Math.hypot(player.x - e.x, player.y - e.y);
 
     // boss enrages below 40% HP: faster, hits more often
-    if (e.boss) e.enraged = e.hp < e.maxHp * 0.4;
+    if (e.boss && !e.enraged && e.hp < e.maxHp * 0.4) {
+      // First-time enrage — fire a one-shot banner + screen shake so
+      // the player feels the boss level up its aggression.
+      e.enraged = true;
+      showBanner("🔥 首領狂暴！");
+      _addScreenShake(0.12);
+    } else if (e.boss) {
+      e.enraged = e.hp < e.maxHp * 0.4;
+    }
 
     // pick target
     const dPlayer = e.dist;
@@ -5126,6 +5134,34 @@ function _syncEnemyMeshes(dt) {
       // Also flare the rifle's scope lens when firing.
       if (rec.lensMat) {
         rec.lensMat.emissiveIntensity = 1.0 + 0.4 * Math.sin(rec.walkT * 0.5) + muzzleT * 2.5;
+      }
+    }
+    // === Boss enrage visuals ===
+    // When the boss drops below 40% HP, switch its eye color to red
+    // and brighten the sword flame so the player sees the threat
+    // escalation. The body emissive adds a faint red glow on the
+    // armor for a "heated" look.
+    if (kind === "boss" && rec.eyeMat) {
+      if (e.enraged) {
+        // Red, brighter
+        rec.eyeMat.color.setHex(0xff3030);
+        rec.eyeMat.emissive.setHex(0xff2010);
+        rec.eyeMat.emissiveIntensity = 3.0;
+        if (rec.flameMat) {
+          rec.flameMat.emissive.setHex(0xff3010);
+          rec.flameMat.emissiveIntensity = 3.2 + 0.8 * Math.sin(rec.walkT * 0.7);
+        }
+        if (rec.bodyMat && rec.bodyMat.emissive) {
+          rec.bodyMat.emissive.setRGB(0.45, 0.05, 0.05);
+        }
+      } else {
+        // Normal yellow eyes, gentle flame pulse
+        rec.eyeMat.color.setHex(0xffd12b);
+        rec.eyeMat.emissive.setHex(0xffd12b);
+        rec.eyeMat.emissiveIntensity = 1.8;
+        if (rec.bodyMat && rec.bodyMat.emissive) {
+          rec.bodyMat.emissive.setRGB(0, 0, 0);
+        }
       }
     }
     // === Hurt tint ===
