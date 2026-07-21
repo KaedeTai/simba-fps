@@ -2043,6 +2043,10 @@ function update(dt) {
     score += 250;
     coins += 80 + wave * 20;                       // wave-clear bonus
     player.hp = Math.min(player.maxHp, player.hp + 20);
+    // === Wave-clear celebration: shake + extended-duration banner.
+    // Small shake so the shop opening doesn't jar the player.
+    _addScreenShake(0.08);
+    showBanner(`✓ 第 ${wave - 1} 波清空！金幣 +${80 + (wave - 1) * 20} · 生命 +20`);
     bankProgress();                                // auto-save between waves
     saveRun();                                     // === persistence: snapshot wave transition ===
     openShop(true);
