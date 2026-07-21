@@ -585,6 +585,16 @@ function restoreRun(d) {
 // ---------- Waves ----------
 const BOSS_EVERY = 5;   // a boss appears on every 5th wave
 let bossAlive = false;
+// === Screen shake ===
+// Magnitude in world units. Set on heavy events (boss spawn, plasma
+// explosion, big hit). Decays exponentially each frame. Applied to the
+// 3D camera position offset and to the 2.5D canvas CSS transform.
+let screenShake = 0;
+function _addScreenShake(amount) {
+  // Cap the cumulative shake so a flurry of small hits doesn't make
+  // the screen unreadable.
+  screenShake = Math.min(screenShake + amount, 0.30);
+}
 
 // find a valid spawn point far enough from the player
 function findSpawn(minDist2) {
@@ -673,6 +683,8 @@ function spawnBoss() {
   });
   bossAlive = true;
   showBanner(`⚠ 首領來襲！血量 ${hp}，血低時會狂暴！擊倒可獲 ${reward} 金幣`);
+  // Screen-shake on spawn so the player feels the boss ARRIVE.
+  _addScreenShake(0.18);
 }
 
 // spawn the appropriate roster for the current wave
@@ -1330,7 +1342,7 @@ function tryShoot() {
       if (e.hp <= 0 && !e.dead) {
         e.dead = true; e.deadT = 0;
         kills++; score += e.scoreVal; coins += e.reward;
-        if (e.boss) { bossAlive = false; showBanner(`🏆 首領已擊倒！獲得 ${e.reward} 金幣`); }
+        if (e.boss) { bossAlive = false; showBanner(`🏆 首領已擊倒！獲得 ${e.reward} 金幣`); _addScreenShake(0.22); }
       }
     }
     if (hitCount > 0) console.log("[fps][plasma] AOE hit", hitCount, "enemies via", impact.hit, "at", impact.x.toFixed(1), impact.y.toFixed(1));
@@ -1385,9 +1397,11 @@ function tryShoot() {
           showBanner(`🏆 首領已擊倒！獲得 ${best.reward} 金幣`);
           // Big death burst: ~40 particles, larger + longer-lived
           _spawnHitSpark(best.x, best.y, 40, { big: true });
+          _addScreenShake(0.22);
         } else {
           // Normal kill: small but visible burst
           _spawnHitSpark(best.x, best.y, 10);
+          _addScreenShake(0.04);
         }
       }
     } else {
@@ -1427,9 +1441,33 @@ function _spawnHitSpark(worldX, worldY, count, opts) {
       life: (big ? 0.6 : 0.28) + Math.random() * (big ? 0.4 : 0.18),
       maxLife: 1.0,                 // overwritten right after — kept for the alpha calc
       big,
+      color: (opts && opts.color) || null,  // null = yellow (default)
     });
     // maxLife is a per-spark field used by the alpha calc, so set it
     // to the actual life value (not a default) so the fade is correct.
+    const s = sparks[sparks.length - 1];
+    s.maxLife = s.life;
+  }
+}
+
+// Blood splatter — same physics as hit-sparks but darker red, more
+// particles, longer-lived. Spawned on enemy hits (replaces the single
+// hit-spark with a more visceral splatter) and on enemy deaths (big
+// burst). Reuses the sparks array + renderer.
+function _spawnBlood(worldX, worldY, count, opts) {
+  const big = !!(opts && opts.big);
+  for (let i = 0; i < count; i++) {
+    const ang = Math.random() * Math.PI * 2;
+    const speed = (big ? 0.8 : 0.4) + Math.random() * (big ? 1.5 : 0.7);
+    sparks.push({
+      x: worldX, y: worldY,
+      vx: Math.cos(ang) * speed,
+      vy: Math.sin(ang) * speed,
+      life: (big ? 0.8 : 0.45) + Math.random() * (big ? 0.3 : 0.25),
+      maxLife: 1.0,
+      big,
+      color: big ? 0xaa1818 : 0xc82828,  // dark red for big, bright red for small
+    });
     const s = sparks[sparks.length - 1];
     s.maxLife = s.life;
   }
@@ -1568,12 +1606,27 @@ function _drawSparks() {
     const sy = horizon + Math.min(H * 1.8, H / dist) / 2;
     const core = s.big ? 4 : 2.5;
     const glow = s.big ? 10 : 6;
-    // Soft glow
-    ctx.fillStyle = `rgba(255, 180, 50, ${a * 0.4})`;
-    ctx.beginPath(); ctx.arc(sx, sy, glow, 0, 7); ctx.fill();
-    // Bright core
-    ctx.fillStyle = `rgba(255, 240, 160, ${a})`;
-    ctx.beginPath(); ctx.arc(sx, sy, core, 0, 7); ctx.fill();
+    // Color: blood (red) vs hit-spark (yellow). Sparks without a color
+    // use the original yellow palette; ones with a color field render
+    // in that color (used by _spawnBlood for the visceral splatter).
+    if (s.color) {
+      const r = (s.color >> 16) & 0xff;
+      const g = (s.color >> 8) & 0xff;
+      const b = s.color & 0xff;
+      // Glow
+      ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${a * 0.45})`;
+      ctx.beginPath(); ctx.arc(sx, sy, glow, 0, 7); ctx.fill();
+      // Core
+      ctx.fillStyle = `rgba(${Math.min(255, r + 50)}, ${g}, ${b}, ${a})`;
+      ctx.beginPath(); ctx.arc(sx, sy, core, 0, 7); ctx.fill();
+    } else {
+      // Soft glow (yellow)
+      ctx.fillStyle = `rgba(255, 180, 50, ${a * 0.4})`;
+      ctx.beginPath(); ctx.arc(sx, sy, glow, 0, 7); ctx.fill();
+      // Bright core
+      ctx.fillStyle = `rgba(255, 240, 160, ${a})`;
+      ctx.beginPath(); ctx.arc(sx, sy, core, 0, 7); ctx.fill();
+    }
   }
   ctx.restore();
 }
@@ -1674,6 +1727,8 @@ function _castRayImpact(x0, y0, dir, maxDist, opts) {
 // any per-frame update slot.
 function _plasmaExplosion(gridX, gridY, radius) {
   if (typeof world3d === "undefined" || !world3d.ready || !world3d.scene) return;
+  // Heavy impact → big screen shake. Player feels the BANG.
+  _addScreenShake(0.14);
   // ----- 1) Energy core sphere -----
   const coreGeo = new THREE.SphereGeometry(1, 20, 14);
   const coreMat = new THREE.MeshBasicMaterial({
@@ -5524,7 +5579,49 @@ function renderWorld3d(dt) {
   const targetX = player.x + Math.cos(player.dir) * Math.cos(pitchRad);
   const targetY = eyeY + Math.sin(pitchRad);
   const targetZ = player.y + Math.sin(player.dir) * Math.cos(pitchRad);
+  // === Screen shake ===
+  // Apply a random offset to the camera position (not the lookAt target)
+  // so the world "shakes" but the player's gaze direction is preserved.
+  // Random walk ensures the shake feels chaotic, not sinusoidal.
+  if (screenShake > 0.001) {
+    const s = screenShake;
+    const offX = (Math.random() - 0.5) * 2 * s;
+    const offY = (Math.random() - 0.5) * 2 * s;
+    const offZ = (Math.random() - 0.5) * 2 * s;
+    cam.position.set(player.x + offX, eyeY + offY, player.y + offZ);
+  } else {
+    cam.position.set(player.x, eyeY, player.y);
+  }
   cam.lookAt(targetX, targetY, targetZ);
+  // Decay the shake magnitude (exponential).
+  screenShake = Math.max(0, screenShake - dt * 4.0);
+  // Apply a matching CSS shake to the foreground canvas so the world
+  // feels shaky in 3D mode. The canvas covers the full viewport, so
+  // translating it visually shakes the whole game. transform is reset
+  // when shake settles.
+  const w3dCanvas = document.getElementById("world3d");
+  if (w3dCanvas) {
+    if (screenShake > 0.001) {
+      const s = screenShake;
+      const tx = (Math.random() - 0.5) * 16 * s;
+      const ty = (Math.random() - 0.5) * 16 * s;
+      w3dCanvas.style.transform = `translate(${tx}px, ${ty}px)`;
+    } else {
+      w3dCanvas.style.transform = "";
+    }
+  }
+  // Also shake the 2.5D canvas for users on the legacy rendering path.
+  const gameCanvas = document.getElementById("game");
+  if (gameCanvas && !USE_3D_WORLD) {
+    if (screenShake > 0.001) {
+      const s = screenShake;
+      const tx = (Math.random() - 0.5) * 16 * s;
+      const ty = (Math.random() - 0.5) * 16 * s;
+      gameCanvas.style.transform = `translate(${tx}px, ${ty}px)`;
+    } else {
+      gameCanvas.style.transform = "";
+    }
+  }
 
   // ----- per-entity updates (batch 1: just the teammate) -----
   updateTeammate(dt);
