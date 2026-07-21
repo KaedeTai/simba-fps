@@ -5164,6 +5164,15 @@ function _syncEnemyMeshes(dt) {
         }
       }
     }
+    // === Cape flutter (boss) ===
+    // Sway the cape around the base rotation so it looks like it's
+    // flowing in the wind. Bigger amplitude when moving / enraged.
+    if (kind === "boss" && rec.cape) {
+      const speed = e.speed || 0;
+      const amp = 0.06 + speed * 0.04 + (e.enraged ? 0.10 : 0);
+      rec.cape.rotation.y = Math.sin(rec.walkT * 0.8) * amp;
+      rec.cape.rotation.z = Math.cos(rec.walkT * 0.5) * amp * 0.4;
+    }
     // === Hurt tint ===
     // Whole-body flash by lerping the body material's emissive toward
     // white. e.hurt ticks down from 0.18 to 0; we map that to a 0..1
