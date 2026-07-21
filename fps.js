@@ -2053,6 +2053,10 @@ function update(dt) {
         if (tgt === player) {
           player.hp -= e.dmg;
           hurtT = 0.3;
+          // Record damage direction (where the attacker IS, in world coords).
+          // Used by the damage-direction indicator to draw a red arrow.
+          lastHurtDir = Math.atan2(e.y - player.y, e.x - player.x);
+          lastHurtT = 0.4;
           if (player.hp <= 0) { player.hp = 0; endGame(); return; }
         } else {
           ally.hp -= e.dmg;
@@ -5875,6 +5879,12 @@ weapons.forEach((w, i) => {
 });
 const wepSlots = Array.from(wepbar.children);
 let lastHurtOp = -1;
+// Direction of the last hit (in world space, radians, where the
+// damage came FROM). The damage-direction indicator uses this to
+// show a small red arrow at the edge of the screen pointing toward
+// the attacker. Defaults to straight back (PI) when unset.
+let lastHurtDir = Math.PI;
+let lastHurtT = 0;
 
 function updateHUD() {
   $("hpval").textContent = Math.ceil(player.hp);
@@ -5889,6 +5899,43 @@ function updateHUD() {
   // Only touch the overlay opacity when it actually changes.
   const hurtOp = Math.round(Math.max(0, hurtT / 0.4) * 0.9 * 100) / 100;
   if (hurtOp !== lastHurtOp) { $("hurt").style.opacity = hurtOp; lastHurtOp = hurtOp; }
+  // === Damage direction indicator ===
+  // 2.5D only: draw a small red triangle at the screen edge pointing
+  // toward the attacker. The angle is `lastHurtDir - player.dir` in
+  // the player's local frame; the indicator is placed 80px in from
+  // the screen edge, in the direction of the attacker.
+  if (!USE_3D_WORLD && lastHurtT > 0) {
+    lastHurtT = Math.max(0, lastHurtT - dt);
+    const a = lastHurtT / 0.4;            // 1 = just-hit, 0 = expired
+    let rel = lastHurtDir - player.dir;
+    while (rel > Math.PI) rel -= 2 * Math.PI;
+    while (rel < -Math.PI) rel += 2 * Math.PI;
+    // Convert world-relative angle to screen edge point.
+    // The screen is 1280x800; we place the indicator 60px from the edge.
+    const margin = 60;
+    const cx = W / 2 + Math.sin(rel) * (W / 2 - margin);
+    const cy = H / 2 - Math.cos(rel) * (H / 2 - margin);
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(rel);                          // arrow points outward
+    // Soft red glow
+    ctx.fillStyle = `rgba(255, 60, 60, ${a * 0.45})`;
+    ctx.beginPath();
+    ctx.arc(0, 0, 28, 0, 7); ctx.fill();
+    // Bright triangle pointing toward attacker
+    ctx.fillStyle = `rgba(255, 120, 120, ${a})`;
+    ctx.beginPath();
+    ctx.moveTo(0, -22);
+    ctx.lineTo(-14, 12);
+    ctx.lineTo(14, 12);
+    ctx.closePath();
+    ctx.fill();
+    // White center for readability
+    ctx.fillStyle = `rgba(255, 255, 255, ${a * 0.9})`;
+    ctx.beginPath();
+    ctx.arc(0, 0, 5, 0, 7); ctx.fill();
+    ctx.restore();
+  }
 
   // Show on-screen touch controls only while actively playing in touch mode
   const showTouch = touchMode && running && !paused && !gameOver && !shopOpen;
