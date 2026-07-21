@@ -285,13 +285,30 @@ const ally = {
   friendly: true, sizeScale: 0.95,
 };
 
-// Weapon arsenal — pistol is free from the start; the rest appear in the shop
-// as you clear waves (unlockWave) and are bought with coins (cost).
+// Weapon arsenal — pistol + dagger are free from the start; the rest
+// appear in the shop as you clear waves (unlockWave) and are bought with
+// coins (cost).
 // vm = which viewmodel shape to draw. Every entry also gets per-weapon runtime
 // state (mag, reload…) via the .map() below.
+//
+// === Melee weapons (melee: true) ===
+// Flagged for tryShoot's melee branch — no bullet, no ammo, instant damage
+// to enemies within `range` in front of the player. magSize is 1 for the
+// HUD counter, but the melee branch never decrements it (and never auto-
+// reloads either, so the HUD always shows ∞-ish behavior).
 const weapons = [
   { id: "pistol",  name: "手槍",     ico: "🔫", magSize: 12, fireRate: 0.13, reloadTime: 1.0,
     damage: 34,  range: 16, spread: 0.030, pellets: 1, auto: false, vm: "pistol",  owned: true },
+  // Dagger: free from the start, lives in slot 2. Uses the Star.glb model
+  // from the Vanguard Mixamo set as a 3D viewmodel. ~1.4 unit reach
+  // (knife-range — you basically have to be on top of the enemy).
+  // No ammo: magSize: 1 is a display hack so the HUD shows a single bullet
+  // icon; tryShoot's melee branch ignores weapon.mag entirely.
+  // Icon: ⭐ (the actual model is a 4-pointed throwing star with a blue
+  // gem center, not a literal blade — using a star icon to match what
+  // the player sees, while keeping the "匕首" name the user asked for).
+  { id: "dagger",  name: "匕首",     ico: "⭐", magSize: 1,  fireRate: 0.30, reloadTime: 0,
+    damage: 75,  range: 1.4, spread: 0.0,   pellets: 1, auto: false, vm: "dagger",  owned: true, melee: true },
   { id: "smg",     name: "衝鋒槍",   ico: "💥", magSize: 30, fireRate: 0.06, reloadTime: 1.4,
     damage: 16,  range: 14, spread: 0.080, pellets: 1, auto: true,  vm: "smg",     cost: 150,  unlockWave: 2 },
   { id: "shotgun", name: "霰彈槍",   ico: "🔩", magSize: 6,  fireRate: 0.70, reloadTime: 1.7,
@@ -1035,7 +1052,10 @@ function startGame() {
   ally.hp = ally.maxHp; ally.dead = !useAlly; ally.x = sp.x; ally.y = sp.y;
   for (const w of weapons) {
     w.mag = w.magSize; w.reloading = false; w.reloadT = 0; w.cooldown = 0; w.recoil = 0;
-    w.owned = (w.id === "pistol");   // start each run with only the pistol; buy the rest in the shop
+    // Start each run with the pistol + dagger (both free). Other weapons
+    // must be bought in the shop. Dagger is `melee: true` so its
+    // tryShoot branch handles range/ damage without consuming ammo.
+    w.owned = (w.id === "pistol" || w.id === "dagger");
   }
   curWep = 0; weapon = weapons[0];
   hurtT = 0; bossAlive = false;
@@ -1208,6 +1228,61 @@ function enemyRect(e) {
 function tryShoot() {
   if (!running || paused || gameOver) return;
   if (weapon.reloading || weapon.cooldown > 0) return;
+  // === Melee branch (dagger) ===
+  // No ammo, no bullet, no muzzle flash. Find the closest alive enemy in
+  // front of the player within `weapon.range` and apply damage instantly.
+  // No wall check needed because `range` is so small (1.4 units) that a
+  // wall already implies the enemy is unreachable; the isWall() sample
+  // at the enemy center handles the corner case where the enemy is
+  // partially behind a wall.
+  if (weapon.melee) {
+    weapon.cooldown = weapon.fireRate;
+    weapon.recoil = 1;
+    if (WEAPON_3D[weapon.vm]) weapon3dFire();
+    let best = null, bestDist = weapon.range;
+    for (const e of enemies) {
+      if (e.dead) continue;
+      const dx = e.x - player.x, dy = e.y - player.y;
+      const d = Math.hypot(dx, dy);
+      if (d > weapon.range) continue;
+      // Forward cone: must be roughly in front (cosine > 0.5 = 60°)
+      const ang = Math.atan2(dy, dx) - player.dir;
+      const cosA = Math.cos(ang);
+      if (cosA < 0.5) continue;
+      // Wall between player and enemy: dagger shouldn't reach through walls.
+      if (wallBetween(player.x, player.y, e.x, e.y)) continue;
+      if (d < bestDist) { bestDist = d; best = e; }
+    }
+    if (best) {
+      best.hp -= weapon.damage;
+      best.hurt = 0.22;
+      // Damage popup
+      if (!best.damagePopups) best.damagePopups = [];
+      best.damagePopups.push({ value: weapon.damage, life: 0.9, maxLife: 0.9, drift: 0 });
+      // Crosshair hit-flash (re-use the same UI feedback as guns)
+      const ch = $("crosshair");
+      if (ch) {
+        ch.classList.add("hit");
+        clearTimeout(ch._hitT);
+        ch._hitT = setTimeout(() => ch.classList.remove("hit"), 120);
+      }
+      // Small hit-spark at enemy position so melee has visible feedback
+      _spawnHitSpark(best.x, best.y, 6);
+      if (best.hp <= 0 && !best.dead) {
+        best.dead = true; best.deadT = 0;
+        kills++; score += best.scoreVal; coins += best.reward;
+        if (best.boss) {
+          bossAlive = false;
+          showBanner(`🏆 首領已擊倒！獲得 ${best.reward} 金幣`);
+          _spawnHitSpark(best.x, best.y, 40, { big: true });
+        } else {
+          _spawnHitSpark(best.x, best.y, 10);
+        }
+      }
+    }
+    return;                                                  // skip ranged pellet loop
+  }
+  // === Ranged branch (all guns) ===
   if (weapon.mag <= 0) { reload(); return; }
   weapon.mag--;
   weapon.cooldown = weapon.fireRate;
@@ -1533,6 +1608,8 @@ function _drawSmoke() {
 }
 
 function reload() {
+  // Melee weapons have no mag and never reload — bail early.
+  if (weapon.melee) return;
   if (!running || weapon.reloading || weapon.mag === weapon.magSize) return;
   weapon.reloading = true; weapon.reloadT = weapon.reloadTime;
 }
@@ -2465,6 +2542,10 @@ let aiming3d = false;
 // default ADS FOV — its adsFov: 30 gives a real scope-zoom feel.
 const WEAPON_3D = {
   pistol:  { hipPos: [ 0.30, -0.40, -0.60 ], aimPos: [ 0.00, -0.15, -0.50 ], recoilScale: 1.00 },
+  // Dagger: held low-right at hip, tip pointing up-left. Swing animation
+  // is driven by weapon3dFire() raising recoilKick for ~150ms; render3dWeapon
+  // applies it as a forward thrust + slight rotation.
+  dagger:  { hipPos: [ 0.22, -0.32, -0.42 ], aimPos: [ 0.22, -0.32, -0.42 ], recoilScale: 0.30, swingScale: 1.0 },
   smg:     { hipPos: [ 0.32, -0.42, -0.62 ], aimPos: [ 0.00, -0.17, -0.55 ], recoilScale: 0.60 },
   shotgun: { hipPos: [ 0.35, -0.44, -0.72 ], aimPos: [ 0.00, -0.20, -0.60 ], recoilScale: 1.80 },
   rifle:   { hipPos: [ 0.34, -0.42, -0.70 ], aimPos: [ 0.00, -0.19, -0.58 ], recoilScale: 1.10 },
@@ -2484,6 +2565,7 @@ const w3d = {
   ready: false, disabled: false,
   aimT: 0,                              // 0 = hip, 1 = aimed
   recoilKick: 0, muzzleFlashT: 0,
+  swingT: 0,                            // dagger thrust animation: 0=idle, 1=full swing, decays
   turnLagX: 0, turnLagY: 0,             // spring-damped weapon lag on mouse look
   prevDir: 0, prevPitch: 0,
   t: 0,
@@ -3269,6 +3351,16 @@ function init3dWeapons() {
       scene.add(w3d.meshes[key]);
     }
 
+    // === Dagger: loaded asynchronously from assets/models/vanguard/Star.glb
+    // (the off-hand shuriken/star from the Mixamo Vanguard set). GLB loading
+    // is async, so we register a placeholder hidden group, then swap in the
+    // real mesh when GLTFLoader finishes. render3dWeapon already no-ops if
+    // the mesh is null/missing, so the dagger just appears once decoded.
+    w3d.meshes.dagger = new THREE.Group();
+    w3d.meshes.dagger.visible = false;
+    scene.add(w3d.meshes.dagger);
+    _loadDaggerMesh(w3d.meshes.dagger);
+
     Object.assign(w3d, { canvas, scene, camera, renderer, ready: true });
     w3d.prevDir = player.dir; w3d.prevPitch = player.pitch;
     console.log("[fps][3d] init OK", {
@@ -3287,6 +3379,61 @@ function weapon3dFire() {
   // Fire event: kick recoil + flash to full. Both decay in render3dWeapon.
   w3d.recoilKick = 1;
   w3d.muzzleFlashT = 0.09;
+  // Dagger: drive a short swing animation. swingT goes 0→1 on fire, then
+  // decays in render3dWeapon. The dagger's mesh rotation is offset by
+  // sin(swingT * π) * swingScale so the user sees a forward thrust.
+  if (weapon && weapon.id === "dagger") {
+    w3d.swingT = 1.0;
+  }
+}
+
+// Asynchronously load the Star.glb dagger model and populate the placeholder
+// group. The placeholder group is already added to the scene by
+// init3dWeapons; we just replace its children with the real mesh when the
+// GLB decodes. No-op safe if THREE / GLTFLoader missing — placeholder
+// stays empty, render3dWeapon skips it, gameplay still works.
+function _loadDaggerMesh(holder) {
+  if (typeof THREE === "undefined" || !THREE.GLTFLoader) {
+    console.warn("[fps][3d] dagger: GLTFLoader unavailable, viewmodel empty");
+    return;
+  }
+  const loader = new THREE.GLTFLoader();
+  loader.load(
+    "assets/models/vanguard/Star.glb",
+    (gltf) => {
+      const model = gltf.scene;
+      // Auto-fit to a held-prop size (~0.42 world units long). Star.glb
+      // doesn't ship a known scale, so we read the bounding box and scale
+      // uniformly. The +X axis of the GLB is the natural "blade" direction
+      // in the source; if not, the rotation block below flips it.
+      const bbox = new THREE.Box3().setFromObject(model);
+      const size = new THREE.Vector3();
+      bbox.getSize(size);
+      const longest = Math.max(size.x, size.y, size.z) || 1;
+      const TARGET = 0.42;
+      const s = TARGET / longest;
+      model.scale.setScalar(s);
+      // Recompute bbox after scale, then re-center the model on its own
+      // bbox so the model group's origin sits at the dagger's geometric
+      // centre. WEAPON_3D.dagger.hipPos then positions it relative to
+      // the camera.
+      const bbox2 = new THREE.Box3().setFromObject(model);
+      const c = new THREE.Vector3();
+      bbox2.getCenter(c);
+      model.position.sub(c);
+      // Tilt the blade so the tip points up-and-left (held-dagger pose).
+      // Adjust if the model ends up facing the wrong way on first test.
+      model.rotation.set(0, 0, Math.PI * 0.18);
+      holder.add(model);
+      console.log("[fps][3d] dagger viewmodel loaded",
+        "bbox=" + size.toArray().map(v => v.toFixed(2)).join(","),
+        "scale=" + s.toFixed(3));
+    },
+    undefined,
+    (err) => {
+      console.warn("[fps][3d] dagger GLB load failed:", err && err.message);
+    }
+  );
 }
 
 function render3dWeapon(dt) {
@@ -3329,7 +3476,9 @@ function render3dWeapon(dt) {
   // ----- recoil / flash decay -----
   w3d.recoilKick   = Math.max(0, w3d.recoilKick   - dt * 7);       // ~150ms decay
   w3d.muzzleFlashT = Math.max(0, w3d.muzzleFlashT - dt);
+  w3d.swingT       = Math.max(0, w3d.swingT       - dt * 6);       // dagger: ~170ms thrust
   const rk = w3d.recoilKick * cfg.recoilScale;                     // per-weapon intensity
+  const sw = Math.sin(w3d.swingT * Math.PI) * (cfg.swingScale || 0); // bell-curve thrust
 
   // ----- compose final pose -----
   const a = w3d.aimT;
@@ -3337,17 +3486,23 @@ function render3dWeapon(dt) {
   const ax = cfg.aimPos[0], ay = cfg.aimPos[1], az = cfg.aimPos[2];
   const px = hx * (1 - a) + ax * a + bobX + w3d.turnLagX * 0.4;
   // MUZZLE RISE on fire: weapon translates UP (+y) and BACK toward viewer (+z).
-  const py = hy * (1 - a) + ay * a + bobY + w3d.turnLagY * 0.35 + rk * 0.055;
-  const pz = hz * (1 - a) + az * a + rk * 0.030;
+  // DAGGER thrust instead: forward (-z) + slight down (-y) — a stab, not a kick.
+  const isDagger = vm === "dagger";
+  const py = hy * (1 - a) + ay * a + bobY + w3d.turnLagY * 0.35
+              + (isDagger ? -sw * 0.06 : rk * 0.055);
+  const pz = hz * (1 - a) + az * a
+              + (isDagger ? -sw * 0.12 : rk * 0.030);
   mesh.position.set(px, py, pz);
   // MUZZLE RISE (rotation): +rotation.x lifts the barrel tip up. The previous
   // version had this sign flipped, so recoil looked like muzzle DEPRESSION.
   // Also flipped the turnLagY coupling so a look-up-fast lag now tilts the
   // barrel slightly DOWN relative to the new view (natural lag).
+  // DAGGER swing: rotation.z forward (tip flick) + rotation.x up to arc the
+  // blade. The +0.55 rad on z gives a visible stab-and-recover motion.
   mesh.rotation.set(
-    +rk * 0.28 - w3d.turnLagY * 1.2,        // pitch: +x = barrel up (muzzle rise on fire)
-    -w3d.turnLagX * 1.4,                    // yaw lag
-     w3d.turnLagX * 0.15                    // subtle roll on turn
+    +rk * 0.28 - w3d.turnLagY * 1.2 + (isDagger ? sw * 0.6 : 0),
+    -w3d.turnLagX * 1.4,
+    w3d.turnLagX * 0.15 + (isDagger ? sw * 0.55 : 0)
   );
 
   // ----- FOV lerp (ADS zoom feel) -----
@@ -3361,11 +3516,15 @@ function render3dWeapon(dt) {
   }
 
   // ----- muzzle flash pulse (per-weapon quad lives in mesh.userData.flash) -----
-  const flash = mesh.userData.flash;
+  // Guarded: melee weapons (dagger) don't have a flash quad in their
+  // userData — they have no muzzle. Skip the access cleanly.
+  const flash = mesh.userData && mesh.userData.flash;
   const mf = w3d.muzzleFlashT / 0.09;
-  flash.material.opacity = Math.max(0, mf);
-  flash.rotation.z += dt * 40;                                     // twinkle
-  flash.scale.setScalar(0.7 + mf * 0.9);
+  if (flash && flash.material) {
+    flash.material.opacity = Math.max(0, mf);
+    flash.rotation.z += dt * 40;                                     // twinkle
+    flash.scale.setScalar(0.7 + mf * 0.9);
+  }
 
   // ----- minigun barrel spin — the cluster stashed on userData spins when
   // firing (muzzle flash timer active) and coasts down to a stop otherwise.
@@ -4916,8 +5075,8 @@ let lastHurtOp = -1;
 function updateHUD() {
   $("hpval").textContent = Math.ceil(player.hp);
   $("hpbar").style.width = (player.hp / player.maxHp * 100) + "%";
-  $("ammoval").textContent = weapon.reloading ? "…" : weapon.mag;
-  $("ammomax").textContent = weapon.magSize;
+  $("ammoval").textContent = weapon.reloading ? "…" : (weapon.melee ? "∞" : weapon.mag);
+  $("ammomax").textContent = weapon.melee ? "" : weapon.magSize;
   $("wepname").textContent = weapon.name;
   $("scoreval").textContent = score;
   $("waveval").textContent = wave;
