@@ -357,6 +357,13 @@ function cycleWeapon(dir) {
 }
 const enemies = [];
 let score = 0, wave = 1, kills = 0, coins = 0;
+// === Kill streak tracker ===
+// Each kill within STREAK_WINDOW_S of the previous counts toward a
+// streak. Triggered a banner like "雙殺!" / "三殺!" / "四殺!" /
+// "五殺!" / "神一般!" at thresholds.
+let lastKillT = -10;
+let killStreak = 0;
+const STREAK_WINDOW_S = 2.0;
 let running = false, paused = false, gameOver = false, shopOpen = false, awaitingNextWave = false;
 const keys = {};
 let mouseDown = false, hurtT = 0;
@@ -1283,6 +1290,7 @@ function tryShoot() {
       if (best.hp <= 0 && !best.dead) {
         best.dead = true; best.deadT = 0;
         kills++; score += best.scoreVal; coins += best.reward;
+        _bumpStreak(best.boss ? 3 : 1);
         if (best.boss) {
           bossAlive = false;
           showBanner(`🏆 首領已擊倒！獲得 ${best.reward} 金幣`);
@@ -1342,6 +1350,7 @@ function tryShoot() {
       if (e.hp <= 0 && !e.dead) {
         e.dead = true; e.deadT = 0;
         kills++; score += e.scoreVal; coins += e.reward;
+        _bumpStreak(e.boss ? 3 : 1);
         if (e.boss) { bossAlive = false; showBanner(`🏆 首領已擊倒！獲得 ${e.reward} 金幣`); _addScreenShake(0.22); }
       }
     }
@@ -1392,6 +1401,7 @@ function tryShoot() {
       if (best.hp <= 0 && !best.dead) {
         best.dead = true; best.deadT = 0;
         kills++; score += best.scoreVal; coins += best.reward;
+        _bumpStreak(best.boss ? 3 : 1);
         if (best.boss) {
           bossAlive = false;
           showBanner(`🏆 首領已擊倒！獲得 ${best.reward} 金幣`);
@@ -1725,10 +1735,34 @@ function _castRayImpact(x0, y0, dir, maxDist, opts) {
 //      player has a visual anchor for how far the damage reaches.
 // Uses requestAnimationFrame so it can self-terminate without touching
 // any per-frame update slot.
+// === Kill streak helper ===
+// Bumps the kill streak and triggers a banner when crossing
+// thresholds. Boss kills count as a +3 streak bonus so a boss kill
+// during a streak feels punchy. Returns the new streak count.
+const STREAK_LABELS = {
+  2: "🔥 雙殺!",
+  3: "🔥🔥 三殺!",
+  4: "💀 四殺!",
+  5: "⚡ 五殺!",
+  6: "🌟 神一般!",
+};
+function _bumpStreak(amount) {
+  const now = performance.now() / 1000;
+  if (now - lastKillT < STREAK_WINDOW_S) {
+    killStreak += amount;
+  } else {
+    killStreak = amount;
+  }
+  lastKillT = now;
+  const label = STREAK_LABELS[killStreak];
+  if (label) {
+    showBanner(label);
+    _addScreenShake(0.06);
+  }
+  return killStreak;
+}
+
 function _plasmaExplosion(gridX, gridY, radius) {
-  if (typeof world3d === "undefined" || !world3d.ready || !world3d.scene) return;
-  // Heavy impact → big screen shake. Player feels the BANG.
-  _addScreenShake(0.14);
   // ----- 1) Energy core sphere -----
   const coreGeo = new THREE.SphereGeometry(1, 20, 14);
   const coreMat = new THREE.MeshBasicMaterial({
@@ -2047,6 +2081,8 @@ function update(dt) {
     // Small shake so the shop opening doesn't jar the player.
     _addScreenShake(0.08);
     showBanner(`✓ 第 ${wave - 1} 波清空！金幣 +${80 + (wave - 1) * 20} · 生命 +20`);
+    // Reset streak at wave boundary so it doesn't carry over.
+    killStreak = 0;
     bankProgress();                                // auto-save between waves
     saveRun();                                     // === persistence: snapshot wave transition ===
     openShop(true);
