@@ -692,6 +692,8 @@ function spawnBoss() {
   showBanner(`⚠ 首領來襲！血量 ${hp}，血低時會狂暴！擊倒可獲 ${reward} 金幣`);
   // Screen-shake on spawn so the player feels the boss ARRIVE.
   _addScreenShake(0.18);
+  // Red vignette flash so the player SEES the boss appear.
+  _bossSpawnFlash();
 }
 
 // spawn the appropriate roster for the current wave
@@ -1815,6 +1817,21 @@ function muzzleFlash() {
   const f = $("flash");
   f.style.opacity = "0.9";
   setTimeout(() => { f.style.opacity = "0"; }, 55);
+}
+
+// Boss-spawn red flash — a different gradient + a slow fade so the
+// player FEELS the boss appear. Reuses the same #flash element with
+// an inline background override + longer hold.
+function _bossSpawnFlash() {
+  const f = $("flash");
+  f.style.background = "radial-gradient(circle at 50% 50%, rgba(180,30,30,0.0) 0%, rgba(180,30,30,0.6) 60%, rgba(60,0,0,0.85) 100%)";
+  f.style.opacity = "1";
+  // Two-stage fade: quick drop to 0.4, then slow drop to 0.
+  setTimeout(() => { f.style.opacity = "0.4"; }, 120);
+  setTimeout(() => { f.style.opacity = "0"; }, 700);
+  // Restore the default muzzle-flash background so the next shot uses
+  // the warm yellow gradient as intended.
+  setTimeout(() => { f.style.background = ""; }, 750);
 }
 
 let bannerTimer = null;
