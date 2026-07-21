@@ -5111,6 +5111,23 @@ function _syncEnemyMeshes(dt) {
     if (rec.lensMat) {
       rec.lensMat.emissiveIntensity = 1.0 + 0.4 * Math.sin(rec.walkT * 0.5);
     }
+    // === Shooter muzzle-flash raise ===
+    // When the shooter fires (e.muzzle > 0), tilt the right arm up
+    // briefly so the rifle kicks up to the firing position. Otherwise
+    // the arm is held at the walk-cycle angle. The arm angle blends
+    // smoothly between the walk pose and the firing pose.
+    if (kind === "shooter" && rec.armR) {
+      const muzzleT = e.muzzle > 0 ? Math.min(1, e.muzzle / 0.18) : 0;
+      // Walk pose: armR rotation.x was set above. Firing pose: lift up
+      // by ~0.4 rad (rifle points up-forward). Lerp between them.
+      const walkPose = +sw * legAmp * 0.45;  // current value (re-derived)
+      const firingPose = -0.5;  // arm lifted forward/up
+      rec.armR.rotation.x = walkPose * (1 - muzzleT) + firingPose * muzzleT;
+      // Also flare the rifle's scope lens when firing.
+      if (rec.lensMat) {
+        rec.lensMat.emissiveIntensity = 1.0 + 0.4 * Math.sin(rec.walkT * 0.5) + muzzleT * 2.5;
+      }
+    }
     // === Hurt tint ===
     // Whole-body flash by lerping the body material's emissive toward
     // white. e.hurt ticks down from 0.18 to 0; we map that to a 0..1
