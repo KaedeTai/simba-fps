@@ -5132,14 +5132,20 @@ function _syncEnemyMeshes(dt) {
     const dxE = player.x - e.x, dyE = player.y - e.y;
     const faceDir = Math.atan2(dyE, dxE);
     rec.group.rotation.y = Math.PI / 2 - faceDir;
-    // Visibility + death: fall forward, then hide once the despawn
-    // window (~1.2 s) elapses.
+    // Visibility + death: fall forward + slight roll for a more dynamic
+    // corpse pose, then hide once the despawn window (~1.2 s) elapses.
     if (e.dead) {
       const t = Math.min(1, e.deadT / 0.4);
       rec.group.rotation.x = t * (Math.PI / 2);
+      // Lateral roll: a small extra rotation.y that grows with t so the
+      // corpse isn't lying in a perfect forward-only pose. Bosses get
+      // a bigger roll so the dramatic death reads.
+      const roll = (e.boss ? 0.7 : 0.3) * t;
+      rec.group.rotation.z = Math.sin(e.deadT * 4) * roll;
       rec.group.visible = e.deadT < 1.2;
     } else {
       rec.group.rotation.x = 0;
+      rec.group.rotation.z = 0;
       rec.group.visible = true;
     }
     // === Per-frame animation ===
