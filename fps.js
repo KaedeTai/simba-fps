@@ -4431,125 +4431,477 @@ function _buildCeilingTexture() {
 // is kept in case the sprite image failed to load. The group is still
 // scaled by sizeScale so the boss / shield height rules still apply.
 // =========================================================================
-function _createEnemyMesh(e) {
-  const isBoss = !!e.boss;
+// =============================================================================
+// === 3D enemy mesh builders (Phase 3) ===
+// =============================================================================
+//
+// Each kind gets a procedural humanoid / creature built from
+// BoxGeometry / CylinderGeometry / SphereGeometry / ConeGeometry primitives.
+// Goal: distinct silhouettes readable at a glance, walk-cycle + hurt tint
+// driven from _syncEnemyMeshes.
+//
+// Returned record shape (consumed by _syncEnemyMeshes):
+//   {
+//     group,           // THREE.Group — the parent (foot at y=0)
+//     kind,            // string for log + dispatch
+//     armL, armR,      // THREE.Group pivots at shoulder (humanoids only)
+//     legL, legR,      // THREE.Group pivots at hip
+//     legFL, legFR,    // front legs (charger only)
+//     legBL, legBR,    // back legs  (charger only)
+//     bodyMat,         // for hurt-tint (optional)
+//     eyeMat,          // for emissive flicker (optional)
+//     weapon,          // held-prop group (e.g. club, axe, rifle) for swing
+//     extra: { ... },  // kind-specific extras (sword flame, hood, etc.)
+//     walkAmp,         // scalar amplitude for leg/arm swing (0.5 = normal)
+//     bounceAmp,       // vertical hop per step (m)
+//   }
+
+// ----- Shared helper: a humanoid limb group with upper + lower segment -----
+function _makeHumanLimb(material, upperR, upperH, lowerR, lowerH) {
+  const limb = new THREE.Group();
+  const upper = new THREE.Mesh(new THREE.CylinderGeometry(upperR, upperR, upperH, 8), material);
+  upper.position.y = -upperH / 2; limb.add(upper);
+  const lower = new THREE.Mesh(new THREE.CylinderGeometry(upperR * 0.9, lowerR, lowerH, 8), material);
+  lower.position.y = -(upperH + lowerH / 2); limb.add(lower);
+  // Knee sphere — softens the joint visually
+  const knee = new THREE.Mesh(new THREE.SphereGeometry(upperR * 1.05, 6, 6), material);
+  knee.position.y = -upperH; limb.add(knee);
+  return limb;
+}
+
+// ----- GRUNT — red demon humanoid with spiked club -----
+function createGrunt3DMesh() {
   const g = new THREE.Group();
-
-  // Pick the sprite kind. Fall back to "grunt" for old enemies without
-  // a `kind` field (e.g. carried over from a saved run).
-  const spriteKind = e.kind || (isBoss ? "boss" : "grunt");
-  const spriteImg  = enemyImages[spriteKind];
-
-  // Cached materials used by the per-frame sync to drive hurt / death
-  // effects on whichever rendering path is active (sprite OR primitives).
-  let bodyMat = null, darkMat = null, chestMat = null;
-  let armL = null, armR = null, legL = null, legR = null;
-  let sprite = null;
-
-  if (spriteImg) {
-    // === SPRITE PATH ===
-    // CanvasTexture wraps the <img> directly. We add an alphaTest so
-    // fully-transparent pixels don't write to the depth buffer (otherwise
-    // the sprite's rectangular bounds would occlude things behind it).
-    const tex = new THREE.CanvasTexture(spriteImg);
-    if (THREE.SRGBColorSpace !== undefined) tex.colorSpace = THREE.SRGBColorSpace;
-    tex.needsUpdate = true;
-    const mat = new THREE.SpriteMaterial({
-      map: tex, transparent: true, alphaTest: 0.02,
-      side: THREE.DoubleSide, depthWrite: false,
-    });
-    sprite = new THREE.Sprite(mat);
-    // The original primitive body was ~1.06 units tall (feet to top of
-    // head). The sprite needs to occupy the same visible height before
-    // g.scale applies sizeScale. We set sprite scale to baseH=1.06, then
-    // g.scale.setScalar(0.55 * sizeScale) brings the visible height to
-    // ~0.58 (grunt) or ~1.4 (boss 2.4x). Sprite is centered on its
-    // origin; lifting y by baseH/2 puts the foot at y=0.
-    const baseH = 1.06;
-    sprite.scale.set(baseH, baseH, 1);
-    sprite.position.y = baseH / 2;
-    g.add(sprite);
-  } else {
-    // === PRIMITIVE FALLBACK ===
-    // (kept so the game still works if a sprite fails to load; same
-    //  body geometry as before, with all the materials the per-frame
-    //  sync wants to poke at for hurt-tint / walk-cycle.)
-    const bodyColor = isBoss ? 0x7c37a2 : 0x8f3232;
-    const darkColor = isBoss ? 0x26123c : 0x3a1414;
-    const trimColor = isBoss ? 0xffcf3b : 0xe59a9a;
-    const eyeHex    = isBoss ? 0xffd12b : 0xff4b4b;
-
-    bodyMat  = new THREE.MeshStandardMaterial({ color: bodyColor, roughness: 0.85, metalness: 0.10 });
-    darkMat  = new THREE.MeshStandardMaterial({ color: darkColor, roughness: 0.90, metalness: 0.05 });
-    const trimMat  = new THREE.MeshStandardMaterial({ color: trimColor, roughness: 0.70, metalness: 0.30 });
-    chestMat = new THREE.MeshStandardMaterial({ color: darkColor, roughness: 0.90 });
-    const eyeMat   = new THREE.MeshStandardMaterial({
-      color: eyeHex, roughness: 0.30, emissive: eyeHex, emissiveIntensity: 0.9,
-    });
-
-    const torso = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.50, 0.20), bodyMat);
-    torso.position.y = 0.55; g.add(torso);
-    const chest = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.30, 0.05), chestMat);
-    chest.position.set(0, 0.60, 0.11); g.add(chest);
-    const shoulderL = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.08, 0.16), trimMat);
-    shoulderL.position.set(-0.21, 0.77, 0); g.add(shoulderL);
-    const shoulderR = shoulderL.clone();
-    shoulderR.position.x = +0.21; g.add(shoulderR);
-
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.12, 12, 10), bodyMat);
-    head.position.set(0, 0.94, 0); g.add(head);
-    const eyeL = new THREE.Mesh(new THREE.SphereGeometry(0.022, 8, 6), eyeMat);
-    eyeL.position.set(-0.05, 0.96, 0.11); g.add(eyeL);
-    const eyeR = eyeL.clone();
-    eyeR.position.x = +0.05; g.add(eyeR);
-
-    if (isBoss) {
-      const hornGeo = new THREE.ConeGeometry(0.030, 0.18, 6);
-      const hornL = new THREE.Mesh(hornGeo, trimMat);
-      hornL.position.set(-0.08, 1.06, 0);
-      hornL.rotation.z = +0.5; hornL.rotation.x = -0.3; g.add(hornL);
-      const hornR = hornL.clone();
-      hornR.position.x = +0.08;
-      hornR.rotation.z = -0.5; hornR.rotation.x = -0.3; g.add(hornR);
-    }
-
-    function makeArm(sideX) {
-      const arm = new THREE.Group();
-      arm.position.set(sideX, 0.77, 0);
-      const upper = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.24, 8), bodyMat);
-      upper.position.y = -0.12; arm.add(upper);
-      const fist  = new THREE.Mesh(new THREE.SphereGeometry(0.055, 10, 8), darkMat);
-      fist.position.y = -0.27; arm.add(fist);
-      return arm;
-    }
-    armL = makeArm(-0.22); g.add(armL);
-    armR = makeArm(+0.22); g.add(armR);
-
-    function makeLeg(sideX) {
-      const leg = new THREE.Group();
-      leg.position.set(sideX, 0.32, 0);
-      const thigh = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.28, 8), darkMat);
-      thigh.position.y = -0.14; leg.add(thigh);
-      const shin  = new THREE.Mesh(new THREE.CylinderGeometry(0.050, 0.045, 0.25, 8), darkMat);
-      shin.position.y = -0.40; leg.add(shin);
-      const boot  = new THREE.Mesh(new THREE.BoxGeometry(0.080, 0.050, 0.13), darkMat);
-      boot.position.set(0, -0.54, 0.02); leg.add(boot);
-      return leg;
-    }
-    legL = makeLeg(-0.08); g.add(legL);
-    legR = makeLeg(+0.08); g.add(legR);
+  // Saturated reds for clear "demon" silhouette. Bumped emissive on
+  // the eyes so they read as glowing through dim ambient light.
+  const bodyMat = new THREE.MeshStandardMaterial({ color: 0xc92828, roughness: 0.70, metalness: 0.10 });
+  const darkMat = new THREE.MeshStandardMaterial({ color: 0x4a1212, roughness: 0.85, metalness: 0.05 });
+  const hornMat = new THREE.MeshStandardMaterial({ color: 0x1a0808, roughness: 0.95, metalness: 0.0 });
+  const eyeMat  = new THREE.MeshStandardMaterial({ color: 0xff7838, emissive: 0xff5028, emissiveIntensity: 2.2 });
+  const clubMat = new THREE.MeshStandardMaterial({ color: 0x5a3220, roughness: 0.90, metalness: 0.05 });
+  // Torso
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.55, 0.24), bodyMat);
+  torso.position.y = 0.55; g.add(torso);
+  // Chest plate (slightly darker)
+  const chest = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.32, 0.05), darkMat);
+  chest.position.set(0, 0.58, 0.13); g.add(chest);
+  // Head
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.16, 12, 10), bodyMat);
+  head.position.y = 0.95; g.add(head);
+  // Horns (2 forward-curving cones)
+  const hornGeo = new THREE.ConeGeometry(0.035, 0.20, 6);
+  const hornL = new THREE.Mesh(hornGeo, hornMat);
+  hornL.position.set(-0.10, 1.10, 0);
+  hornL.rotation.z = +0.55; hornL.rotation.x = -0.20; g.add(hornL);
+  const hornR = new THREE.Mesh(hornGeo, hornMat);
+  hornR.position.set(+0.10, 1.10, 0);
+  hornR.rotation.z = -0.55; hornR.rotation.x = -0.20; g.add(hornR);
+  // Eyes (glowing)
+  const eyeGeo = new THREE.SphereGeometry(0.028, 8, 6);
+  const eyeL = new THREE.Mesh(eyeGeo, eyeMat);
+  eyeL.position.set(-0.06, 0.97, 0.14); g.add(eyeL);
+  const eyeR = new THREE.Mesh(eyeGeo, eyeMat);
+  eyeR.position.set(+0.06, 0.97, 0.14); g.add(eyeR);
+  // Fangs (2 small white triangles on the lower face)
+  const fangMat = new THREE.MeshStandardMaterial({ color: 0xfff0e0, roughness: 0.4 });
+  const fangGeo = new THREE.ConeGeometry(0.018, 0.06, 4);
+  const fangL = new THREE.Mesh(fangGeo, fangMat);
+  fangL.position.set(-0.05, 0.85, 0.13); fangL.rotation.x = Math.PI; g.add(fangL);
+  const fangR = new THREE.Mesh(fangGeo, fangMat);
+  fangR.position.set(+0.05, 0.85, 0.13); fangR.rotation.x = Math.PI; g.add(fangR);
+  // Arms (pivots at shoulder)
+  function makeArm() {
+    const arm = new THREE.Group();
+    const upper = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.25, 8), bodyMat);
+    upper.position.y = -0.13; arm.add(upper);
+    const fist = new THREE.Mesh(new THREE.SphereGeometry(0.06, 8, 6), darkMat);
+    fist.position.y = -0.27; arm.add(fist);
+    return arm;
   }
+  const armL = makeArm(); armL.position.set(-0.26, 0.78, 0); g.add(armL);
+  const armR = makeArm(); armR.position.set(+0.26, 0.78, 0); g.add(armR);
+  // Legs
+  function makeLeg() {
+    const leg = new THREE.Group();
+    const thigh = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.30, 8), darkMat);
+    thigh.position.y = -0.15; leg.add(thigh);
+    const shin = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.045, 0.27, 8), darkMat);
+    shin.position.y = -0.43; leg.add(shin);
+    const boot = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.06, 0.16), darkMat);
+    boot.position.set(0, -0.58, 0.02); leg.add(boot);
+    return leg;
+  }
+  const legL = makeLeg(); legL.position.set(-0.10, 0.30, 0); g.add(legL);
+  const legR = makeLeg(); legR.position.set(+0.10, 0.30, 0); g.add(legR);
+  // Spiked club in right hand
+  const club = new THREE.Group();
+  club.position.set(0, -0.30, 0.05);
+  const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.42, 8), clubMat);
+  handle.position.y = -0.20; club.add(handle);
+  const clubHead = new THREE.Mesh(new THREE.BoxGeometry(0.20, 0.22, 0.20), clubMat);
+  clubHead.position.y = -0.44; club.add(clubHead);
+  // Spikes around the club head
+  const spikeGeo = new THREE.ConeGeometry(0.028, 0.10, 5);
+  for (let i = 0; i < 4; i++) {
+    const a = (i / 4) * Math.PI * 2;
+    const sp = new THREE.Mesh(spikeGeo, hornMat);
+    sp.position.set(Math.cos(a) * 0.10, -0.40, Math.sin(a) * 0.10);
+    sp.rotation.z = Math.cos(a) * 0.4;
+    sp.rotation.x = Math.sin(a) * 0.4;
+    club.add(sp);
+  }
+  armR.add(club);
+  return { group: g, kind: "grunt", armL, armR, legL, legR, bodyMat, eyeMat, walkAmp: 0.55, bounceAmp: 0.04 };
+}
 
+// ----- SHIELD — dark knight with tower shield + battle axe -----
+function createShield3DMesh() {
+  const g = new THREE.Group();
+  // Lower metalness on the armor so the dark gray doesn't get washed
+  // out by the blue-tinted environment reflection. Trim / blade stay
+  // metallic for highlights.
+  const armorMat = new THREE.MeshStandardMaterial({ color: 0x2a2d35, roughness: 0.70, metalness: 0.25 });
+  const darkMat  = new THREE.MeshStandardMaterial({ color: 0x141519, roughness: 0.75, metalness: 0.20 });
+  const trimMat  = new THREE.MeshStandardMaterial({ color: 0xd8dce2, roughness: 0.25, metalness: 0.85 });
+  const eyeMat   = new THREE.MeshStandardMaterial({ color: 0x60c0ff, emissive: 0x60c0ff, emissiveIntensity: 1.0 });
+  // Torso (armored)
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.60, 0.28), armorMat);
+  torso.position.y = 0.58; g.add(torso);
+  // Breastplate detail
+  const breast = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.40, 0.05), trimMat);
+  breast.position.set(0, 0.60, 0.15); g.add(breast);
+  // Cross emblem on breastplate
+  const crossV = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.22, 0.02), darkMat);
+  crossV.position.set(0, 0.60, 0.18); g.add(crossV);
+  const crossH = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.06, 0.02), darkMat);
+  crossH.position.set(0, 0.60, 0.18); g.add(crossH);
+  // Helmet head
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.16, 12, 10), armorMat);
+  head.position.y = 0.98; g.add(head);
+  // Helmet visor slit (glowing blue)
+  const visor = new THREE.Mesh(new THREE.BoxGeometry(0.20, 0.04, 0.02), eyeMat);
+  visor.position.set(0, 0.99, 0.155); g.add(visor);
+  // Helmet crest
+  const crest = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.20, 0.20), trimMat);
+  crest.position.set(0, 1.15, -0.02); g.add(crest);
+  // Arms
+  function makeArm() {
+    const arm = new THREE.Group();
+    const upper = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.27, 8), armorMat);
+    upper.position.y = -0.14; arm.add(upper);
+    const elbow = new THREE.Mesh(new THREE.SphereGeometry(0.065, 8, 6), trimMat);
+    elbow.position.y = -0.28; arm.add(elbow);
+    return arm;
+  }
+  const armL = makeArm(); armL.position.set(-0.30, 0.82, 0); g.add(armL);
+  const armR = makeArm(); armR.position.set(+0.30, 0.82, 0); g.add(armR);
+  // Legs
+  function makeLeg() {
+    const leg = new THREE.Group();
+    const thigh = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.075, 0.30, 8), armorMat);
+    thigh.position.y = -0.15; leg.add(thigh);
+    const shin = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.06, 0.30, 8), armorMat);
+    shin.position.y = -0.45; leg.add(shin);
+    const boot = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.08, 0.20), darkMat);
+    boot.position.set(0, -0.65, 0.02); leg.add(boot);
+    return leg;
+  }
+  const legL = makeLeg(); legL.position.set(-0.13, 0.32, 0); g.add(legL);
+  const legR = makeLeg(); legR.position.set(+0.13, 0.32, 0); g.add(legR);
+  // Tower shield on left arm
+  const shield = new THREE.Group();
+  shield.position.set(0, -0.05, 0.04);
+  shield.rotation.x = -0.15;
+  const shieldBody = new THREE.Mesh(new THREE.BoxGeometry(0.50, 0.55, 0.06), armorMat);
+  shield.add(shieldBody);
+  // Shield trim
+  const shieldTrim = new THREE.Mesh(new THREE.BoxGeometry(0.54, 0.04, 0.04), trimMat);
+  shieldTrim.position.set(0, 0.26, 0.04); shield.add(shieldTrim);
+  const shieldTrim2 = shieldTrim.clone();
+  shieldTrim2.position.y = -0.26; shield.add(shieldTrim2);
+  // Shield emblem
+  const emblem = new THREE.Mesh(new THREE.SphereGeometry(0.10, 12, 8), trimMat);
+  emblem.position.set(0, 0.0, 0.04); shield.add(emblem);
+  armL.add(shield);
+  // Battle axe on right arm
+  const axe = new THREE.Group();
+  axe.position.set(0, -0.30, 0.05);
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.55, 8), trimMat);
+  shaft.position.y = -0.25; axe.add(shaft);
+  // Axe head (double-bladed)
+  const axeBladeMat = new THREE.MeshStandardMaterial({ color: 0x9097a4, roughness: 0.20, metalness: 0.95 });
+  const axeBladeL = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.22, 0.03), axeBladeMat);
+  axeBladeL.position.set(-0.10, -0.42, 0); axe.add(axeBladeL);
+  const axeBladeR = axeBladeL.clone();
+  axeBladeR.position.x = +0.10; axe.add(axeBladeR);
+  armR.add(axe);
+  return { group: g, kind: "shield", armL, armR, legL, legR, bodyMat: armorMat, walkAmp: 0.40, bounceAmp: 0.02 };
+}
+
+// ----- SHOOTER — hooded sniper with scoped rifle -----
+function createShooter3DMesh() {
+  const g = new THREE.Group();
+  const cloakMat = new THREE.MeshStandardMaterial({ color: 0x1a1a26, roughness: 0.95, metalness: 0.05 });
+  const darkMat  = new THREE.MeshStandardMaterial({ color: 0x0d0d14, roughness: 0.95, metalness: 0.05 });
+  const skinMat  = new THREE.MeshStandardMaterial({ color: 0x4a3030, roughness: 0.85, metalness: 0.05 });
+  const eyeMat   = new THREE.MeshStandardMaterial({ color: 0x60ff90, emissive: 0x60ff90, emissiveIntensity: 1.4 });
+  const rifleMat = new THREE.MeshStandardMaterial({ color: 0x22252a, roughness: 0.55, metalness: 0.55 });
+  const scopeMat = new THREE.MeshStandardMaterial({ color: 0x0a0a0a, roughness: 0.20, metalness: 0.95 });
+  // Cloaked torso (tapered cylinder for the cloak shape)
+  const torso = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.32, 0.65, 10), cloakMat);
+  torso.position.y = 0.50; g.add(torso);
+  // Hood opening (dark inner shadow)
+  const hood = new THREE.Mesh(new THREE.SphereGeometry(0.18, 12, 10, 0, Math.PI * 2, 0, Math.PI * 0.55), cloakMat);
+  hood.position.y = 0.92; hood.rotation.x = -0.1; g.add(hood);
+  // Face inside the hood
+  const face = new THREE.Mesh(new THREE.SphereGeometry(0.13, 10, 8), skinMat);
+  face.position.set(0, 0.88, 0.06); g.add(face);
+  // Glowing eye (just one visible, single-eye-scope look)
+  const eye = new THREE.Mesh(new THREE.SphereGeometry(0.022, 8, 6), eyeMat);
+  eye.position.set(0, 0.90, 0.16); g.add(eye);
+  // Arms (slim, hidden under cloak)
+  function makeArm() {
+    const arm = new THREE.Group();
+    const upper = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.25, 8), cloakMat);
+    upper.position.y = -0.13; arm.add(upper);
+    return arm;
+  }
+  const armL = makeArm(); armL.position.set(-0.24, 0.78, 0); g.add(armL);
+  const armR = makeArm(); armR.position.set(+0.24, 0.78, 0); g.add(armR);
+  // Legs (also hidden under cloak but visible at the bottom)
+  function makeLeg() {
+    const leg = new THREE.Group();
+    const upper = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.06, 0.30, 8), darkMat);
+    upper.position.y = -0.15; leg.add(upper);
+    const boot = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.06, 0.16), darkMat);
+    boot.position.set(0, -0.32, 0.02); leg.add(boot);
+    return leg;
+  }
+  const legL = makeLeg(); legL.position.set(-0.08, 0.18, 0); g.add(legL);
+  const legR = makeLeg(); legR.position.set(+0.08, 0.18, 0); g.add(legR);
+  // Scoped rifle held in both arms
+  const rifle = new THREE.Group();
+  rifle.position.set(0.05, -0.18, 0.10);
+  // Stock
+  const stock = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.10, 0.30), rifleMat);
+  stock.position.set(0, 0, -0.05); rifle.add(stock);
+  // Receiver
+  const receiver = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.10, 0.30), rifleMat);
+  receiver.position.set(0, 0, 0.18); rifle.add(receiver);
+  // Long barrel
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, 0.40, 10), rifleMat);
+  barrel.rotation.x = Math.PI / 2; barrel.position.set(0, 0, 0.50); rifle.add(barrel);
+  // Scope (tube + 2 caps)
+  const scope = new THREE.Mesh(new THREE.CylinderGeometry(0.030, 0.030, 0.20, 12), scopeMat);
+  scope.rotation.x = Math.PI / 2; scope.position.set(0, 0.10, 0.18); rifle.add(scope);
+  // Scope front cap (green lens)
+  const lensMat = new THREE.MeshStandardMaterial({
+    color: 0x40ff80, emissive: 0x40ff80, emissiveIntensity: 1.2,
+    transparent: true, opacity: 0.85,
+  });
+  const lens = new THREE.Mesh(new THREE.CircleGeometry(0.025, 12), lensMat);
+  lens.position.set(0, 0.10, 0.28); lens.rotation.y = 0; rifle.add(lens);
+  // Magazine
+  const mag = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.10, 0.06), rifleMat);
+  mag.position.set(0, -0.10, 0.18); rifle.add(mag);
+  armR.add(rifle);
+  // Sling loop on left arm
+  const sling = new THREE.Mesh(new THREE.TorusGeometry(0.10, 0.012, 6, 12, Math.PI), darkMat);
+  sling.position.set(0, -0.20, 0.05); sling.rotation.y = Math.PI / 2;
+  armL.add(sling);
+  return { group: g, kind: "shooter", armL, armR, legL, legR, eyeMat,
+           walkAmp: 0.30, bounceAmp: 0.02, rifle, lensMat };
+}
+
+// ----- CHARGER — 4-legged demonic hound (no humanoid torso) -----
+function createCharger3DMesh() {
+  const g = new THREE.Group();
+  const bodyMat = new THREE.MeshStandardMaterial({ color: 0xb34a18, roughness: 0.80, metalness: 0.10 });
+  const darkMat = new THREE.MeshStandardMaterial({ color: 0x4a1a08, roughness: 0.90, metalness: 0.05 });
+  const spikeMat = new THREE.MeshStandardMaterial({ color: 0x1a0a0a, roughness: 0.95, metalness: 0.0 });
+  const eyeMat  = new THREE.MeshStandardMaterial({ color: 0xffe080, emissive: 0xffe080, emissiveIntensity: 1.6 });
+  // Main body (long, low) — stretched sphere
+  const body = new THREE.Mesh(new THREE.SphereGeometry(0.22, 12, 8), bodyMat);
+  body.scale.set(1.6, 0.7, 0.9);
+  body.position.y = 0.32; g.add(body);
+  // Head (forward, slightly raised)
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.16, 12, 10), bodyMat);
+  head.position.set(0.35, 0.40, 0); g.add(head);
+  // Snout (extending forward)
+  const snout = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.06, 0.22, 8), bodyMat);
+  snout.rotation.z = -Math.PI / 2; snout.position.set(0.46, 0.36, 0); g.add(snout);
+  // Eyes (yellow, glowing)
+  const eyeGeo = new THREE.SphereGeometry(0.025, 8, 6);
+  const eyeL = new THREE.Mesh(eyeGeo, eyeMat);
+  eyeL.position.set(0.42, 0.46, 0.10); g.add(eyeL);
+  const eyeR = new THREE.Mesh(eyeGeo, eyeMat);
+  eyeR.position.set(0.42, 0.46, -0.10); g.add(eyeR);
+  // Ears (pointed cones)
+  const earGeo = new THREE.ConeGeometry(0.04, 0.12, 5);
+  const earL = new THREE.Mesh(earGeo, darkMat);
+  earL.position.set(0.28, 0.55, 0.10); earL.rotation.z = -0.3; g.add(earL);
+  const earR = new THREE.Mesh(earGeo, darkMat);
+  earR.position.set(0.28, 0.55, -0.10); earR.rotation.z = -0.3; g.add(earR);
+  // Fangs (2 small white triangles hanging down)
+  const fangMat = new THREE.MeshStandardMaterial({ color: 0xfff0e0, roughness: 0.4 });
+  const fangGeo = new THREE.ConeGeometry(0.015, 0.05, 4);
+  const fangL = new THREE.Mesh(fangGeo, fangMat);
+  fangL.position.set(0.55, 0.32, 0.05); fangL.rotation.x = Math.PI; g.add(fangL);
+  const fangR = new THREE.Mesh(fangGeo, fangMat);
+  fangR.position.set(0.55, 0.32, -0.05); fangR.rotation.x = Math.PI; g.add(fangR);
+  // Spikes along the back
+  for (let i = 0; i < 5; i++) {
+    const t = -0.5 + (i / 4) * 0.7;
+    const sp = new THREE.Mesh(new THREE.ConeGeometry(0.025, 0.10, 5), spikeMat);
+    sp.position.set(t, 0.50, 0);
+    sp.rotation.x = 0;
+    g.add(sp);
+  }
+  // Tail
+  const tail = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.012, 0.40, 6), darkMat);
+  tail.position.set(-0.38, 0.36, 0); tail.rotation.z = 0.6; g.add(tail);
+  // 4 legs
+  function makeLeg() {
+    const leg = new THREE.Group();
+    const upper = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.04, 0.22, 8), bodyMat);
+    upper.position.y = -0.11; leg.add(upper);
+    const paw = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.05, 0.10), darkMat);
+    paw.position.set(0, -0.22, 0); leg.add(paw);
+    return leg;
+  }
+  // Front legs
+  const legFL = makeLeg(); legFL.position.set(0.25, 0.28, 0.14); g.add(legFL);
+  const legFR = makeLeg(); legFR.position.set(0.25, 0.28, -0.14); g.add(legFR);
+  // Back legs
+  const legBL = makeLeg(); legBL.position.set(-0.25, 0.28, 0.14); g.add(legBL);
+  const legBR = makeLeg(); legBR.position.set(-0.25, 0.28, -0.14); g.add(legBR);
+  return { group: g, kind: "charger", legFL, legFR, legBL, legBR,
+           bodyMat, eyeMat, walkAmp: 0.65, bounceAmp: 0.06 };
+}
+
+// ----- BOSS — purple/gold warlord with flaming sword + cape -----
+function createBoss3DMesh() {
+  const g = new THREE.Group();
+  // Deep purple + gold with low metalness on the armor (env-map was
+  // washing it pink). Gold stays high-metal for highlight specular.
+  const armorMat = new THREE.MeshStandardMaterial({ color: 0x4a0e6a, roughness: 0.55, metalness: 0.30 });
+  const darkMat  = new THREE.MeshStandardMaterial({ color: 0x1a0428, roughness: 0.65, metalness: 0.20 });
+  const goldMat  = new THREE.MeshStandardMaterial({ color: 0xf2c235, roughness: 0.20, metalness: 0.95 });
+  const capeMat  = new THREE.MeshStandardMaterial({ color: 0x2a0612, roughness: 0.85, metalness: 0.10, side: THREE.DoubleSide });
+  const eyeMat   = new THREE.MeshStandardMaterial({ color: 0xffd12b, emissive: 0xffd12b, emissiveIntensity: 1.8 });
+  const flameMat = new THREE.MeshStandardMaterial({ color: 0xff8030, emissive: 0xff5020, emissiveIntensity: 2.2 });
+  // Torso (large armored chest)
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.65, 0.85, 0.40), armorMat);
+  torso.position.y = 0.72; g.add(torso);
+  // Gold chestplate ornament
+  const breast = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.55, 0.05), goldMat);
+  breast.position.set(0, 0.72, 0.22); g.add(breast);
+  // Skull emblem on chest
+  const skull = new THREE.Mesh(new THREE.SphereGeometry(0.10, 10, 8), darkMat);
+  skull.position.set(0, 0.85, 0.25); g.add(skull);
+  const eyeSkullL = new THREE.Mesh(new THREE.SphereGeometry(0.025, 8, 6), eyeMat);
+  eyeSkullL.position.set(-0.035, 0.87, 0.33); g.add(eyeSkullL);
+  const eyeSkullR = new THREE.Mesh(new THREE.SphereGeometry(0.025, 8, 6), eyeMat);
+  eyeSkullR.position.set(+0.035, 0.87, 0.33); g.add(eyeSkullR);
+  // Head (large, horned)
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.22, 14, 12), armorMat);
+  head.position.y = 1.30; g.add(head);
+  // Horns (big, curving outward + forward)
+  const hornGeo = new THREE.ConeGeometry(0.06, 0.35, 8);
+  const hornL = new THREE.Mesh(hornGeo, goldMat);
+  hornL.position.set(-0.18, 1.50, 0);
+  hornL.rotation.z = +0.65; hornL.rotation.x = -0.25; g.add(hornL);
+  const hornR = new THREE.Mesh(hornGeo, goldMat);
+  hornR.position.set(+0.18, 1.50, 0);
+  hornR.rotation.z = -0.65; hornR.rotation.x = -0.25; g.add(hornR);
+  // Glowing eyes
+  const eyeGeo = new THREE.SphereGeometry(0.04, 8, 6);
+  const eyeL = new THREE.Mesh(eyeGeo, eyeMat);
+  eyeL.position.set(-0.08, 1.32, 0.20); g.add(eyeL);
+  const eyeR = new THREE.Mesh(eyeGeo, eyeMat);
+  eyeR.position.set(+0.08, 1.32, 0.20); g.add(eyeR);
+  // Cape (flat plane, hangs from shoulders)
+  const cape = new THREE.Mesh(new THREE.PlaneGeometry(0.55, 0.80, 1, 3), capeMat);
+  cape.position.set(0, 0.55, -0.22);
+  cape.rotation.x = 0.15;  // slight forward tilt so cape flows behind
+  g.add(cape);
+  // Arms (big, armored)
+  function makeArm() {
+    const arm = new THREE.Group();
+    const upper = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 0.35, 10), armorMat);
+    upper.position.y = -0.18; arm.add(upper);
+    const elbow = new THREE.Mesh(new THREE.SphereGeometry(0.085, 8, 6), goldMat);
+    elbow.position.y = -0.36; arm.add(elbow);
+    return arm;
+  }
+  const armL = makeArm(); armL.position.set(-0.42, 1.10, 0); g.add(armL);
+  const armR = makeArm(); armR.position.set(+0.42, 1.10, 0); g.add(armR);
+  // Legs
+  function makeLeg() {
+    const leg = new THREE.Group();
+    const thigh = new THREE.Mesh(new THREE.CylinderGeometry(0.10, 0.10, 0.40, 10), armorMat);
+    thigh.position.y = -0.20; leg.add(thigh);
+    const shin = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.08, 0.40, 10), armorMat);
+    shin.position.y = -0.60; leg.add(shin);
+    const boot = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.10, 0.26), darkMat);
+    boot.position.set(0, -0.86, 0.04); leg.add(boot);
+    return leg;
+  }
+  const legL = makeLeg(); legL.position.set(-0.18, 0.42, 0); g.add(legL);
+  const legR = makeLeg(); legR.position.set(+0.18, 0.42, 0); g.add(legR);
+  // Flaming sword in right hand
+  const sword = new THREE.Group();
+  sword.position.set(0, -0.40, 0.05);
+  // Hilt
+  const hilt = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.12, 8), goldMat);
+  hilt.position.y = -0.06; sword.add(hilt);
+  // Crossguard
+  const guard = new THREE.Mesh(new THREE.BoxGeometry(0.30, 0.04, 0.08), goldMat);
+  guard.position.y = -0.12; sword.add(guard);
+  // Blade
+  const blade = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.65, 0.02), goldMat);
+  blade.position.y = -0.45; sword.add(blade);
+  // Flame overlay on blade (semi-transparent emissive)
+  const flame = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.70, 0.05), flameMat);
+  flame.position.y = -0.45; sword.add(flame);
+  // Pommel
+  const pommel = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 6), goldMat);
+  pommel.position.y = -0.02; sword.add(pommel);
+  armR.add(sword);
+  return { group: g, kind: "boss", armL, armR, legL, legR, bodyMat: armorMat, eyeMat,
+           cape, sword, flameMat, walkAmp: 0.50, bounceAmp: 0.05 };
+}
+
+// Dispatch: build the right 3D mesh for an enemy's kind. Returns the
+// standard mesh record consumed by _syncEnemyMeshes. Falls back to a
+// grunt mesh if the kind is unknown (shouldn't happen — pickEnemyKind
+// only returns the 5 known kinds).
+function _buildEnemy3DMesh(kind) {
+  switch (kind) {
+    case "shield":  return createShield3DMesh();
+    case "shooter": return createShooter3DMesh();
+    case "charger": return createCharger3DMesh();
+    case "boss":    return createBoss3DMesh();
+    case "grunt":
+    default:        return createGrunt3DMesh();
+  }
+}
+
+function _createEnemyMesh(e) {
+  // === 3D mesh path (Phase 3) ===
+  // Build a procedural 3D mesh for this enemy kind. No more THREE.Sprite
+  // billboards — every enemy now has a real 3D body with walk cycle,
+  // hurt tint, and kind-specific silhouette.
+  const kind = e.kind || (e.boss ? "boss" : "grunt");
+  const rec = _buildEnemy3DMesh(kind);
   // Same final scale as the pre-sprite version: 0.55 baseline * sizeScale.
+  // Boss uses sizeScale=2.4 → final 1.32; charger uses 1.0 → 0.55.
   const scale = (e.sizeScale || 1) * 0.55;
-  g.scale.setScalar(scale);
-
-  return {
-    group: g, bodyMat, darkMat, chestMat,
-    armL, armR, legL, legR,
-    sprite,                 // THREE.Sprite | null
-    walkT: 0,
-  };
+  rec.group.scale.setScalar(scale);
+  rec.walkT = 0;
+  rec.kind = kind;
+  rec.sprite = null;  // legacy: kept null so old code paths that check `rec.sprite` no-op cleanly
+  return rec;
 }
 
 // Phase 1+2: build wall / floor / ceiling geometry with textured materials.
@@ -4619,11 +4971,18 @@ function _syncEnemyMeshes(dt) {
   for (const [enemy, rec] of meshes) {
     if (!live.has(enemy)) {
       // Dispose the texture we created for the sprite so we don't leak
-      // GPU memory across wave restarts. Primitive meshes share a single
-      // material per enemy so just nulling the reference is fine.
+      // GPU memory across wave restarts. 3D meshes are built per
+      // enemy with their own materials, so we walk the tree and dispose.
       if (rec.sprite && rec.sprite.material) {
         if (rec.sprite.material.map) rec.sprite.material.map.dispose();
         rec.sprite.material.dispose();
+      } else {
+        rec.group.traverse(o => {
+          if (o.material) {
+            if (Array.isArray(o.material)) o.material.forEach(m => m.dispose());
+            else o.material.dispose();
+          }
+        });
       }
       world3d.scene.remove(rec.group);
       meshes.delete(enemy);
@@ -4638,74 +4997,79 @@ function _syncEnemyMeshes(dt) {
     }
     // Position on the floor at ally-style +Z mapping used everywhere else
     rec.group.position.set(e.x, 0, e.y);
-    // Face the player (AI has enemies chase the player, so pointing at
-    // them makes the 3D silhouette read correctly). Sprites are auto-
-    // camera-facing so this rotation only affects the primitive path.
+    // Face the player. AI chases the player so this gives the 3D body a
+    // natural facing direction (limb swing reads as forward-stride).
     const dxE = player.x - e.x, dyE = player.y - e.y;
     const faceDir = Math.atan2(dyE, dxE);
     rec.group.rotation.y = Math.PI / 2 - faceDir;
-    // Visibility + death: fall forward and hide once the despawn window
-    // (~1.2 s) elapses.
+    // Visibility + death: fall forward, then hide once the despawn
+    // window (~1.2 s) elapses.
     if (e.dead) {
       const t = Math.min(1, e.deadT / 0.4);
       rec.group.rotation.x = t * (Math.PI / 2);
       rec.group.visible = e.deadT < 1.2;
-      // Fade out the sprite in the last 0.4s before despawn
-      if (rec.sprite && rec.sprite.material) {
-        rec.sprite.material.opacity = Math.max(0, 1 - Math.max(0, e.deadT - 0.8) / 0.4);
-      }
     } else {
       rec.group.rotation.x = 0;
       rec.group.visible = true;
-      if (rec.sprite && rec.sprite.material) {
-        rec.sprite.material.opacity = 1.0;
-      }
     }
     // === Per-frame animation ===
+    // Walk cycle: speed-based. Stationary enemies hold still (shooter
+    // aiming pose), charging enemies bounce hard, grunts take a normal
+    // step. The sw value is the sin of walkT; legs/arms swing
+    // proportional to sw, plus a vertical hop proportional to |sw|.
     rec.walkT += dt * 9;
-    const sw = Math.sin(rec.walkT);
-    if (rec.sprite) {
-      // === SPRITE PATH: a vertical bob while the enemy is moving.
-      // Amplitude tracks the enemy's actual speed (faster = bigger step)
-      // so a stationary shooter still reads as "planted". Dying freezes
-      // the bob so the corpse settles. The Y delta is applied on top of
-      // the base y=0 set above, and dies with the fall-forward rotation
-      // (rotation.x tilts the whole group; the bob adds a local up/down).
-      const alive = !e.dead;
-      const speed = e.speed || 1;
-      const bobAmp = alive ? 0.04 * speed : 0;
-      rec.sprite.position.y = 1.06 / 2 + sw * bobAmp;
-      // Slight forward lean while moving (tilt around x in local space).
-      // The sprite always faces the camera, so this just nudges the
-      // silhouette forward — gives a subtle "charging" feel.
-      if (alive) {
-        rec.sprite.material.rotation = -0.08 * Math.abs(sw) * speed;
-      } else {
-        rec.sprite.material.rotation = 0;
-      }
+    const alive = !e.dead;
+    const speed = e.speed || 1;
+    const sw = alive ? Math.sin(rec.walkT) : 0;
+    const swAbs = Math.abs(sw);
+    const legAmp = alive ? (rec.walkAmp || 0.5) : 0;
+    const bounceAmp = alive ? (rec.bounceAmp || 0.03) * speed : 0;
+    rec.group.position.y = swAbs * bounceAmp;
+    // Vertical bob (the group's y, applied to the local frame).
+    // Wait — group.position is set to (e.x, 0, e.y) above. We need to
+    // add to that, not overwrite. Apply bob as a child offset instead
+    // via a wrapper, OR just update y inline:
+    rec.group.position.y = swAbs * bounceAmp;
+    // === Per-kind walk animation ===
+    const kind = rec.kind || e.kind || "grunt";
+    if (kind === "charger") {
+      // 4-legged gallop: front-left + back-right in phase, front-right +
+      // back-left in opposite phase. Bigger amplitude than humanoids.
+      if (rec.legFL) rec.legFL.rotation.x = +sw * legAmp;
+      if (rec.legFR) rec.legFR.rotation.x = -sw * legAmp;
+      if (rec.legBL) rec.legBL.rotation.x = -sw * legAmp;
+      if (rec.legBR) rec.legBR.rotation.x = +sw * legAmp;
     } else {
-      // === PRIMITIVE PATH: existing limb swing (preserved as-is).
-      const legAmp = e.dead ? 0 : 0.50;
-      const armAmp = e.dead ? 0 : 0.25;
-      rec.legL.rotation.x = +sw * legAmp;
-      rec.legR.rotation.x = -sw * legAmp;
-      rec.armL.rotation.x = -sw * armAmp;
-      rec.armR.rotation.x = +sw * armAmp;
+      // Humanoid: legs opposite phase, arms opposite to legs.
+      if (rec.legL) rec.legL.rotation.x = +sw * legAmp;
+      if (rec.legR) rec.legR.rotation.x = -sw * legAmp;
+      if (rec.armL) rec.armL.rotation.x = -sw * legAmp * 0.45;
+      if (rec.armR) rec.armR.rotation.x = +sw * legAmp * 0.45;
+    }
+    // === Boss sword flame pulse ===
+    // The boss carries a flaming sword; the flameMat's emissiveIntensity
+    // pulses with time so the blade looks alive. Same effect on the
+    // shooter's scope lens so the scope "reads" as a powered optic.
+    if (rec.flameMat) {
+      rec.flameMat.emissiveIntensity = 1.8 + 0.6 * Math.sin(rec.walkT * 0.7);
+    }
+    if (rec.lensMat) {
+      rec.lensMat.emissiveIntensity = 1.0 + 0.4 * Math.sin(rec.walkT * 0.5);
     }
     // === Hurt tint ===
-    // Sprite path: shift the material color toward white on damage so the
-    // whole silhouette flashes. We restore the color each frame so the
-    // tint decays as e.hurt ticks down (same 0.18s window the primitive
-    // chestMat uses).
+    // Whole-body flash by lerping the body material's emissive toward
+    // white. e.hurt ticks down from 0.18 to 0; we map that to a 0..1
+    // factor and add white to the emissive color so the body briefly
+    // glows.
     const hurt = e.hurt > 0 ? Math.min(1, e.hurt / 0.18) : 0;
-    if (rec.sprite && rec.sprite.material) {
-      // r/g/b go from (1,1,1) at full hurt -> (1,1,1) at rest; the +0.5
-      // factor is clamped to 1, so the sprite looks washed-out / pale
-      // for ~0.18s after a hit.
-      const w = 1 + hurt * 0.5;
-      rec.sprite.material.color.setRGB(Math.min(1, w), Math.min(1, w), Math.min(1, w));
-    } else if (rec.chestMat && rec.chestMat.emissive) {
-      rec.chestMat.emissive.setRGB(hurt * 0.8, 0, 0);
+    if (rec.bodyMat && rec.bodyMat.emissive) {
+      // Restore to black on every frame, then add the hurt emissive.
+      // Cheap because we're just doing 3 setRGB calls.
+      rec.bodyMat.emissive.setRGB(hurt * 0.9, hurt * 0.6, hurt * 0.6);
+    }
+    if (rec.eyeMat && rec.eyeMat.emissive) {
+      // Eyes flare brighter on hit.
+      rec.eyeMat.emissiveIntensity = 1.4 + hurt * 1.5;
     }
   }
 }
@@ -4752,15 +5116,30 @@ function initWorld3d() {
     // undefined in r160), so we set the output space explicitly here and
     // re-tag the loaded Vanguard textures inside createTeammateFromMixamo.
     if (THREE.SRGBColorSpace !== undefined) renderer.outputColorSpace = THREE.SRGBColorSpace;
-    // Also keep the pre-r155 non-physical light math so the intensity
-    // values below match what worked in earlier revisions of this scene.
-    if ("useLegacyLights" in renderer) renderer.useLegacyLights = true;
+    // Use PBR-correct lighting (r155+ default). The legacy mode was
+    // washing dark grays into pink because the warm key light
+    // dominated. PBR intensities are physical, so 1.0 means "1 lux"
+    // and values stay near 0-2 to feel reasonable.
 
-    // Lights bumped up from the earlier procedural-only values now that
-    // the Vanguard mesh (with real PBR textures) shares this scene.
-    scene.add(new THREE.AmbientLight(0xffffff, 0.85));
-    const key = new THREE.DirectionalLight(0xfff2c8, 1.10); key.position.set( 2, 4,  1); scene.add(key);
-    const rim = new THREE.DirectionalLight(0x9ac0ff, 0.45); rim.position.set(-2, 2, -3); scene.add(rim);
+    // Lights tuned for procedural enemy meshes too — the warm key used
+    // to wash dark grays into pink, so the key now sits more neutral
+    // (slightly warm 0xfff4dc) and the rim is stronger cool. Ambient
+    // bumped so the saturated reds / purples on the enemies don't get
+    // diluted by shadow side.
+    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+    const key = new THREE.DirectionalLight(0xfff4dc, 1.5); key.position.set( 2, 4,  1); scene.add(key);
+    const rim = new THREE.DirectionalLight(0x6a90d0, 0.7); rim.position.set(-2, 2, -3); scene.add(rim);
+    // A second warm fill from the front so enemy faces aren't in deep
+    // shadow at typical viewing angles.
+    const fill = new THREE.DirectionalLight(0xffe4b0, 0.55); fill.position.set(0, 1, 4); scene.add(fill);
+    // Apply the weapon env-map as the scene environment so PBR materials
+    // (enemy armor, the Vanguard mesh) pick up the same cool-sky / warm-
+    // floor reflection gradient the weapons use. Without this, materials
+    // with metalness > 0.1 render flat (no reflection contribution) and
+    // the colors look washed out.
+    if (weaponTextures && weaponTextures.envMap) {
+      scene.environment = weaponTextures.envMap;
+    }
 
     // Phase 1 world geometry — walls / floor / ceiling from MAP grid.
     // Adds the same scene the teammate lives in, so z-buffer solves
