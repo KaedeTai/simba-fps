@@ -2542,10 +2542,17 @@ let aiming3d = false;
 // default ADS FOV — its adsFov: 30 gives a real scope-zoom feel.
 const WEAPON_3D = {
   pistol:  { hipPos: [ 0.30, -0.40, -0.60 ], aimPos: [ 0.00, -0.15, -0.50 ], recoilScale: 1.00 },
-  // Dagger: held low-right at hip, tip pointing up-left. Swing animation
-  // is driven by weapon3dFire() raising recoilKick for ~150ms; render3dWeapon
-  // applies it as a forward thrust + slight rotation.
-  dagger:  { hipPos: [ 0.22, -0.32, -0.42 ], aimPos: [ 0.22, -0.32, -0.42 ], recoilScale: 0.30, swingScale: 1.0 },
+  // Dagger: held at lower-center, ready to swing. The dagger's actual
+  // swing motion is handled in render3dWeapon via the pivot group inside
+  // the holder — it arcs the star from upper-right to lower-left over
+  // the swingT bell curve, plus a forward stab.
+  //   swingScale: amplitude of the swing (radians at peak).
+  //   swingStab: forward Z- thrust at peak (world units).
+  // Position is held close to center to keep the dagger on-screen at
+  // the swing's extreme angles (canvas is 560x440 with FOV 75°, so
+  // visible at z=-0.30 is roughly x∈[-0.23,+0.23], y∈[-0.23,+0.23]).
+  dagger:  { hipPos: [ 0.00, -0.18, -0.32 ], aimPos: [ 0.00, -0.18, -0.32 ],
+             recoilScale: 0.0, swingScale: 1.0, swingStab: 0.18 },
   smg:     { hipPos: [ 0.32, -0.42, -0.62 ], aimPos: [ 0.00, -0.17, -0.55 ], recoilScale: 0.60 },
   shotgun: { hipPos: [ 0.35, -0.44, -0.72 ], aimPos: [ 0.00, -0.20, -0.60 ], recoilScale: 1.80 },
   rifle:   { hipPos: [ 0.34, -0.42, -0.70 ], aimPos: [ 0.00, -0.19, -0.58 ], recoilScale: 1.10 },
@@ -3392,6 +3399,15 @@ function weapon3dFire() {
 // init3dWeapons; we just replace its children with the real mesh when the
 // GLB decodes. No-op safe if THREE / GLTFLoader missing — placeholder
 // stays empty, render3dWeapon skips it, gameplay still works.
+//
+// === Dagger holder structure (built here, animated in render3dWeapon) ===
+//   holder (w3d.meshes.dagger, the WEAPON_3D.dagger.hipPos reference)
+//     ├── pivot  (a Group at origin — its rotation IS the swing)
+//     │     └── star  (the loaded GLB, centered)
+//     ├── slashTrail  (a curved plane mesh, hidden by default, fades in
+//     │                during swing, faces the camera each frame)
+//     └── glowTip     (small bright sphere at the blade's far point,
+//                      pulses on swing)
 function _loadDaggerMesh(holder) {
   if (typeof THREE === "undefined" || !THREE.GLTFLoader) {
     console.warn("[fps][3d] dagger: GLTFLoader unavailable, viewmodel empty");
@@ -3402,29 +3418,84 @@ function _loadDaggerMesh(holder) {
     "assets/models/vanguard/Star.glb",
     (gltf) => {
       const model = gltf.scene;
-      // Auto-fit to a held-prop size (~0.42 world units long). Star.glb
+      // Auto-fit to a held-prop size (~0.40 world units long). Star.glb
       // doesn't ship a known scale, so we read the bounding box and scale
-      // uniformly. The +X axis of the GLB is the natural "blade" direction
-      // in the source; if not, the rotation block below flips it.
+      // uniformly. The 0.40 size + a 0.30 arm length keeps the star
+      // visible on screen at the swing's extreme angles — anything bigger
+      // clips off the right edge.
       const bbox = new THREE.Box3().setFromObject(model);
       const size = new THREE.Vector3();
       bbox.getSize(size);
       const longest = Math.max(size.x, size.y, size.z) || 1;
-      const TARGET = 0.42;
+      const TARGET = 0.40;
       const s = TARGET / longest;
       model.scale.setScalar(s);
       // Recompute bbox after scale, then re-center the model on its own
-      // bbox so the model group's origin sits at the dagger's geometric
-      // centre. WEAPON_3D.dagger.hipPos then positions it relative to
-      // the camera.
+      // bbox so the star's geometric center sits on the pivot origin.
       const bbox2 = new THREE.Box3().setFromObject(model);
       const c = new THREE.Vector3();
       bbox2.getCenter(c);
       model.position.sub(c);
-      // Tilt the blade so the tip points up-and-left (held-dagger pose).
-      // Adjust if the model ends up facing the wrong way on first test.
-      model.rotation.set(0, 0, Math.PI * 0.18);
-      holder.add(model);
+
+      // === Pivot group ===
+      // The pivot's rotation IS the swing. Render3dWeapon rotates the
+      // pivot around the camera-relative Z axis (perpendicular to the
+      // screen) so the star arcs from up-right to down-left.
+      //
+      // CRITICAL: the star must be offset on a NON-Z axis for the
+      // rotation to move it. A point on the z-axis is invariant under
+      // z-axis rotation. We put the star on the +X axis (camera-right
+      // in the standard FPS viewmodel orientation) so the z-rotation
+      // swings it through the +Y (up) / -Y (down) range.
+      const pivot = new THREE.Group();
+      // Arm length tuned so the star stays within the 560x440 weapon3d
+      // canvas at all swing angles. With hipPos (0, -0.18, -0.32) and
+      // FOV 75°, visible at z=-0.32 is roughly x∈[-0.245,+0.245].
+      // armLength 0.20 keeps the star x≤0.20 even at the swing extremes.
+      const armLength = 0.20;
+      model.position.set(armLength, 0, 0);
+      pivot.add(model);
+
+      // === Slash trail (child of pivot — rotates with the star) ===
+      // A quarter-arc plane that becomes visible during swing, fades out.
+      // Procedural canvas texture: a thin bright arc with soft edges so
+      // the trail reads as a swipe of light, not a hard ring sector.
+      const trailGeo = _buildSlashTrailGeometry(armLength + TARGET * 0.4, Math.PI * 0.55);
+      const trailMat = new THREE.MeshBasicMaterial({
+        map: _buildSlashTrailTexture(),
+        transparent: true,
+        opacity: 0,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      });
+      const slashTrail = new THREE.Mesh(trailGeo, trailMat);
+      slashTrail.visible = false;
+      // Pre-orient the trail in the pivot's frame so it sits BEHIND the
+      // star (at lower angle than the star's current position). The
+      // render3dWeapon code adjusts this each frame for follow-through.
+      slashTrail.rotation.set(0, 0, -0.35);
+      pivot.add(slashTrail);
+
+      // === Glow tip (child of pivot — sits at the star's tip) ===
+      // Small bright sphere at the tip of the star, pulses on swing.
+      const tipGeo = new THREE.SphereGeometry(0.030, 12, 8);
+      const tipMat = new THREE.MeshBasicMaterial({
+        color: 0xfff0a0,
+        transparent: true,
+        opacity: 0.3,
+        blending: THREE.AdditiveBlending,
+      });
+      const glowTip = new THREE.Mesh(tipGeo, tipMat);
+      glowTip.position.set(armLength + TARGET * 0.4, 0, 0);
+      pivot.add(glowTip);
+
+      holder.add(pivot);
+
+      // Stash the parts on the holder so render3dWeapon can animate them.
+      holder.userData.dagger = {
+        pivot, slashTrail, glowTip, armLength,
+      };
       console.log("[fps][3d] dagger viewmodel loaded",
         "bbox=" + size.toArray().map(v => v.toFixed(2)).join(","),
         "scale=" + s.toFixed(3));
@@ -3434,6 +3505,74 @@ function _loadDaggerMesh(holder) {
       console.warn("[fps][3d] dagger GLB load failed:", err && err.message);
     }
   );
+}
+
+// Build a curved plane (ring sector) for the slash trail. The plane is
+// defined in the XY plane, sweeping from angle 0 to `sweep` rad, at
+// radius `radius` from origin. The blade-end is at the outer edge so
+// the trail visually attaches to the dagger tip during the swing.
+function _buildSlashTrailGeometry(radius, sweep) {
+  const segments = 22;
+  const positions = [];
+  const uvs = [];
+  const indices = [];
+  // Ring-sector: inner radius = radius*0.5, outer = radius.
+  // v=0 at the inner edge, v=1 at the outer edge.
+  for (let i = 0; i <= segments; i++) {
+    const t = i / segments;
+    const a = -sweep * t;   // sweep from 0 down to -sweep
+    const cos = Math.cos(a), sin = Math.sin(a);
+    // Inner edge
+    positions.push(cos * radius * 0.5, sin * radius * 0.5, 0);
+    uvs.push(t, 0);
+    // Outer edge
+    positions.push(cos * radius,       sin * radius,       0);
+    uvs.push(t, 1);
+  }
+  for (let i = 0; i < segments; i++) {
+    const a = i * 2, b = i * 2 + 1, c = i * 2 + 2, d = i * 2 + 3;
+    indices.push(a, b, d, a, d, c);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  g.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+  g.setIndex(indices);
+  g.computeVertexNormals();
+  return g;
+}
+
+// Procedural canvas texture for the slash trail. A bright cyan/white arc
+// with a sharp center line and soft alpha falloff toward the inner edge
+// and along the ends. Additive blending on the material makes the trail
+// look like a streak of light rather than a hard painted shape.
+function _buildSlashTrailTexture() {
+  const c = document.createElement("canvas");
+  c.width = 256; c.height = 32;
+  const g = c.getContext("2d");
+  // Soft vertical gradient: clear at top (inner edge), bright at bottom
+  // (outer edge / blade tip). Cyan-white core.
+  const grad = g.createLinearGradient(0, 0, 0, 32);
+  grad.addColorStop(0.0, "rgba(180, 240, 255, 0.0)");
+  grad.addColorStop(0.4, "rgba(200, 250, 255, 0.55)");
+  grad.addColorStop(0.7, "rgba(255, 255, 255, 1.0)");
+  grad.addColorStop(1.0, "rgba(220, 255, 240, 0.95)");
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 256, 32);
+  // Horizontal fade at the two ends so the trail doesn't have a hard
+  // cut-off mid-swing.
+  const fade = g.createLinearGradient(0, 0, 256, 0);
+  fade.addColorStop(0.0, "rgba(0, 0, 0, 1)");
+  fade.addColorStop(0.15, "rgba(0, 0, 0, 0)");
+  fade.addColorStop(0.85, "rgba(0, 0, 0, 0)");
+  fade.addColorStop(1.0, "rgba(0, 0, 0, 1)");
+  g.globalCompositeOperation = "destination-out";
+  g.fillStyle = fade;
+  g.fillRect(0, 0, 256, 32);
+  g.globalCompositeOperation = "source-over";
+  const tex = new THREE.CanvasTexture(c);
+  if (THREE.SRGBColorSpace !== undefined) tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  return tex;
 }
 
 function render3dWeapon(dt) {
@@ -3476,7 +3615,7 @@ function render3dWeapon(dt) {
   // ----- recoil / flash decay -----
   w3d.recoilKick   = Math.max(0, w3d.recoilKick   - dt * 7);       // ~150ms decay
   w3d.muzzleFlashT = Math.max(0, w3d.muzzleFlashT - dt);
-  w3d.swingT       = Math.max(0, w3d.swingT       - dt * 6);       // dagger: ~170ms thrust
+  w3d.swingT       = Math.max(0, w3d.swingT       - dt * 3.5);     // dagger: ~285ms full swing — slow enough to read
   const rk = w3d.recoilKick * cfg.recoilScale;                     // per-weapon intensity
   const sw = Math.sin(w3d.swingT * Math.PI) * (cfg.swingScale || 0); // bell-curve thrust
 
@@ -3489,21 +3628,49 @@ function render3dWeapon(dt) {
   // DAGGER thrust instead: forward (-z) + slight down (-y) — a stab, not a kick.
   const isDagger = vm === "dagger";
   const py = hy * (1 - a) + ay * a + bobY + w3d.turnLagY * 0.35
-              + (isDagger ? -sw * 0.06 : rk * 0.055);
+              + (isDagger ? -sw * 0.10 : rk * 0.055);
   const pz = hz * (1 - a) + az * a
-              + (isDagger ? -sw * 0.12 : rk * 0.030);
+              + (isDagger ? -((cfg.swingStab || 0.20) * sw) : rk * 0.030);
   mesh.position.set(px, py, pz);
   // MUZZLE RISE (rotation): +rotation.x lifts the barrel tip up. The previous
   // version had this sign flipped, so recoil looked like muzzle DEPRESSION.
   // Also flipped the turnLagY coupling so a look-up-fast lag now tilts the
   // barrel slightly DOWN relative to the new view (natural lag).
-  // DAGGER swing: rotation.z forward (tip flick) + rotation.x up to arc the
-  // blade. The +0.55 rad on z gives a visible stab-and-recover motion.
+  // DAGGER swing: the HOLDER doesn't rotate — the pivot INSIDE the holder
+  // does (the wrist). rotateZ on the holder adds a small extra tilt for
+  // follow-through feel.
   mesh.rotation.set(
-    +rk * 0.28 - w3d.turnLagY * 1.2 + (isDagger ? sw * 0.6 : 0),
+    +rk * 0.28 - w3d.turnLagY * 1.2,
     -w3d.turnLagX * 1.4,
-    w3d.turnLagX * 0.15 + (isDagger ? sw * 0.55 : 0)
+    w3d.turnLagX * 0.15 + (isDagger ? -sw * 0.25 : 0)
   );
+  // === DAGGER pivot + trail + glow ===
+  // The pivot group (built in _loadDaggerMesh) arcs the star from upper-
+  // right to lower-left over the swingT bell curve. The slash trail and
+  // glow tip are CHILDREN of the pivot so they automatically follow the
+  // star's rotation — we only animate their opacity here.
+  if (isDagger) {
+    const parts = mesh.userData && mesh.userData.dagger;
+    if (parts) {
+      // Swing arc: start at +1.05 rad (up-right), end at -0.45 rad (down-
+      // left). Total arc ≈ 1.5 rad ≈ 86° — a strong, readable wrist flick.
+      // lerp from start to end across the bell-shaped sw curve.
+      parts.pivot.rotation.z = 0.50 - sw * 1.3;
+      // Slash trail: visible only when sw > 0.05. Opacity peaks with sw.
+      const trailOn = sw > 0.05;
+      parts.slashTrail.visible = trailOn;
+      if (trailOn) {
+        // Opacity follows a square curve so the trail flashes bright at
+        // mid-swing and fades at the ends.
+        parts.slashTrail.material.opacity = Math.min(1, sw * sw * 1.4);
+      } else {
+        parts.slashTrail.material.opacity = 0;
+      }
+      // Glow tip: pulse with sw. Always slightly visible so the player
+      // sees where the blade "is" even at rest.
+      parts.glowTip.material.opacity = 0.30 + sw * 0.70;
+    }
+  }
 
   // ----- FOV lerp (ADS zoom feel) -----
   // Each weapon can override the ADS FOV via cfg.adsFov. Sniper uses 30°
