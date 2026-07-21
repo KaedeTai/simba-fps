@@ -1101,6 +1101,13 @@ function resumeGame() {
 function endGame() {
   gameOver = true; running = false;
   if (document.exitPointerLock) document.exitPointerLock();
+  // Big screen shake + red flash on death so the player feels the
+  // impact before the end-of-run card appears.
+  _addScreenShake(0.30);
+  // Big red hurt vignette boost (the existing #hurt overlay is
+  // already painted at full opacity when hurtT was 0.4; this bumps
+  // it to 0.6 and holds for the death moment).
+  hurtT = 0.6;
   profile.totalKills = (profile.totalKills || 0) + kills;   // lifetime kills
   bankProgress();                                            // save on death
   clearRun();                                                // === persistence: fresh next launch ===
