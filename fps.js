@@ -1430,8 +1430,8 @@ function tryShoot() {
 // lives for ~0.3s and is drawn as a thick yellow line in world coords.
 // Per-frame, life ticks down; entries with life <= 0 are pruned.
 const tracers = [];
-function _spawnTracer(x1, y1, x2, y2, life) {
-  tracers.push({ x1, y1, x2, y2, life, maxLife: life });
+function _spawnTracer(x1, y1, x2, y2, life, color) {
+  tracers.push({ x1, y1, x2, y2, life, maxLife: life, color: color || null });
 }
 
 // Hit-spark pool — bright yellow particles that scatter from the hit
@@ -1576,15 +1576,18 @@ function _drawTracers() {
     if (Math.abs(ang) > FOV) continue;            // hit was off-screen
     const endX = W / 2 + Math.tan(ang) * (W / 2) / Math.tan(FOV / 2);
     const endY = horizon + Math.min(H * 1.8, H / dist) / 2;
+    // Color: default yellow (player), green (shooter), custom (rare)
+    const outer = t.color ? t.color[0] : [255, 180, 60];
+    const core  = t.color ? t.color[1] : [255, 230, 120];
     // Soft outer glow
-    ctx.strokeStyle = `rgba(255, 180, 60, ${alpha * 0.35})`;
+    ctx.strokeStyle = `rgba(${outer[0]}, ${outer[1]}, ${outer[2]}, ${alpha * 0.35})`;
     ctx.lineWidth = 7;
     ctx.beginPath();
     ctx.moveTo(startX, startY);
     ctx.lineTo(endX, endY);
     ctx.stroke();
     // Bright core
-    ctx.strokeStyle = `rgba(255, 230, 120, ${alpha * 0.95})`;
+    ctx.strokeStyle = `rgba(${core[0]}, ${core[1]}, ${core[2]}, ${alpha * 0.95})`;
     ctx.lineWidth = 2.5;
     ctx.beginPath();
     ctx.moveTo(startX, startY);
@@ -2041,6 +2044,12 @@ function update(dt) {
           e.attackCd <= 0 && resumeSafetyT <= 0) {
         e.attackCd = 1.7;                  // ~0.6 shots/sec
         e.muzzle = 0.18;                   // visual flash, consumed by drawEnemy
+        // === Shooter tracer ===
+        // Green tracer line from the shooter to the target so the
+        // player can see WHERE the shot came from. Mirrors the
+        // player-side yellow tracer in tryShoot but with a shorter
+        // lifetime + green color (matches the shooter's scope lens).
+        _spawnTracer(e.x, e.y, tgt.x, tgt.y, 0.22, [[100, 230, 130], [180, 255, 200]]);
         if (tgt === player) {
           player.hp -= e.dmg;
           hurtT = 0.3;
