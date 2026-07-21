@@ -5130,8 +5130,9 @@ function initWorld3d() {
     const key = new THREE.DirectionalLight(0xfff4dc, 1.5); key.position.set( 2, 4,  1); scene.add(key);
     const rim = new THREE.DirectionalLight(0x6a90d0, 0.7); rim.position.set(-2, 2, -3); scene.add(rim);
     // A second warm fill from the front so enemy faces aren't in deep
-    // shadow at typical viewing angles.
-    const fill = new THREE.DirectionalLight(0xffe4b0, 0.55); fill.position.set(0, 1, 4); scene.add(fill);
+    // shadow at typical viewing angles. Neutral white to avoid the
+    // previous warm tint that washed the dark knight armor into pink.
+    const fill = new THREE.DirectionalLight(0xffffff, 0.45); fill.position.set(0, 1, 4); scene.add(fill);
     // Apply the weapon env-map as the scene environment so PBR materials
     // (enemy armor, the Vanguard mesh) pick up the same cool-sky / warm-
     // floor reflection gradient the weapons use. Without this, materials
