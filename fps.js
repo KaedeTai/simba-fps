@@ -3610,16 +3610,24 @@ function _loadDaggerMesh(holder) {
       //
       // CRITICAL: the star must be offset on a NON-Z axis for the
       // rotation to move it. A point on the z-axis is invariant under
-      // z-axis rotation. We put the star on the +X axis (camera-right
-      // in the standard FPS viewmodel orientation) so the z-rotation
-      // swings it through the +Y (up) / -Y (down) range.
+      // z-axis rotation. We put the star on the +Y axis (camera-up in
+      // the standard FPS viewmodel orientation) so the z-rotation
+      // swings it through the +X (right) / -X (left) range — a natural
+      // "right-handed chop" arc.
+      //
+      // The Star.glb is the Mixamo Vanguard off-hand shuriken, with its
+      // 18 nodes already baked at "rotation 90° + scale 0.02" so the
+      // main blade (left_blade, 11.4 units long) points along +Y in the
+      // GLB's own frame. So the dagger's "tip" is in our +Y direction.
+      // (Before the GLB was re-baked, the tip was along +X and the model
+      // sat on the +X arm. Re-baking changed the principal axis.)
       const pivot = new THREE.Group();
       // Arm length tuned so the star stays within the 560x440 weapon3d
       // canvas at all swing angles. With hipPos (0, -0.18, -0.32) and
       // FOV 75°, visible at z=-0.32 is roughly x∈[-0.245,+0.245].
-      // armLength 0.20 keeps the star x≤0.20 even at the swing extremes.
+      // armLength 0.20 keeps the star y≤0.20 even at the swing extremes.
       const armLength = 0.20;
-      model.position.set(armLength, 0, 0);
+      model.position.set(0, armLength, 0);
       // === Dagger tuning: apply rotation from _daggerDbg (URL query or
       // live keyboard) to the star model. Re-applied each time the
       // dagger reloads so URL overrides always take effect on a fresh
@@ -3628,11 +3636,20 @@ function _loadDaggerMesh(holder) {
       _daggerDbgApplyToModel(model);
       pivot.add(model);
 
-      // === Slash trail (child of pivot — rotates with the star) ===
+      // === Slash trail (CHILD OF MODEL — rides with the dagger tip) ===
       // A quarter-arc plane that becomes visible during swing, fades out.
       // Procedural canvas texture: a thin bright arc with soft edges so
       // the trail reads as a swipe of light, not a hard ring sector.
-      const trailGeo = _buildSlashTrailGeometry(armLength + TARGET * 0.4, Math.PI * 0.55);
+      //
+      // IMPORTANT: this used to be a child of the pivot (the swing Group),
+      // so its center sat at the pivot's origin and the whole arc orbited
+      // around the hub instead of following the blade tip. The user
+      // reported the trail as "appearing in the lower-left of the screen
+      // when I swing" — that's the pivot-centered ring sweeping through
+      // the bottom of the frame as the pivot rotates. Attaching the trail
+      // to the model (the dagger) makes it follow the blade, which is
+      // what a swipe-of-light FX should look like.
+      const trailGeo = _buildSlashTrailGeometry(TARGET * 0.4, Math.PI * 0.55);
       const trailMat = new THREE.MeshBasicMaterial({
         map: _buildSlashTrailTexture(),
         transparent: true,
@@ -3643,13 +3660,16 @@ function _loadDaggerMesh(holder) {
       });
       const slashTrail = new THREE.Mesh(trailGeo, trailMat);
       slashTrail.visible = false;
-      // Pre-orient the trail in the pivot's frame so it sits BEHIND the
-      // star (at lower angle than the star's current position). The
-      // render3dWeapon code adjusts this each frame for follow-through.
-      slashTrail.rotation.set(0, 0, -0.35);
-      pivot.add(slashTrail);
+      // Position the trail at the blade tip and rotate it so the arc
+      // opens "downward" (toward the user's hand). The trail geometry
+      // sweeps from angle 0 (toward +X) down to -sweep. Rotating -π/2
+      // (90° CCW) so it opens toward -Y (away from the tip toward the
+      // hand) puts the bright outer edge of the arc right at the tip.
+      slashTrail.position.set(0, TARGET * 0.4, 0);
+      slashTrail.rotation.set(0, 0, -Math.PI / 2 - Math.PI * 0.275);
+      model.add(slashTrail);
 
-      // === Glow tip (child of pivot — sits at the star's tip) ===
+      // === Glow tip (child of model — sits at the star's tip) ===
       // Small bright sphere at the tip of the star, pulses on swing.
       const tipGeo = new THREE.SphereGeometry(0.030, 12, 8);
       const tipMat = new THREE.MeshBasicMaterial({
@@ -3659,8 +3679,9 @@ function _loadDaggerMesh(holder) {
         blending: THREE.AdditiveBlending,
       });
       const glowTip = new THREE.Mesh(tipGeo, tipMat);
-      glowTip.position.set(armLength + TARGET * 0.4, 0, 0);
-      pivot.add(glowTip);
+      // Tip is at +Y direction per the GLB re-bake (was +X before).
+      glowTip.position.set(0, TARGET * 0.4, 0);
+      model.add(glowTip);
 
       holder.add(pivot);
 
