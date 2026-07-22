@@ -818,13 +818,12 @@ addEventListener("keydown", e => {
     // picked up in render3dWeapon on the next frame.
     //
     // IMPORTANT: only the *model* (the loaded Star.glb Group) should be
-    // rotated by _daggerDbg. The slashTrail and glowTip are children of
-    // the pivot and already follow the pivot's swing rotation — touching
-    // their own rotation here would visually decouple them from the
-    // dagger. (Previous bug: the loop was `if (sub.isMesh)` which
-    // silently skipped the model because the GLB is a Group, not a Mesh,
-    // so only the slashTrail + glowTip were being rotated — the user
-    // saw the small yellow glow sphere orbiting instead of the dagger.)
+    // rotated by _daggerDbg. The slashTrail is a child of the model and
+    // already follows the model's rotation — touching its own rotation
+    // here would visually decouple it from the dagger. (Previous bug:
+    // the loop was `if (sub.isMesh)` which silently skipped the model
+    // because the GLB is a Group, not a Mesh, so only the slashTrail
+    // (and the now-removed glowTip) was being rotated.)
     const holder = w3d && w3d.meshes && w3d.meshes.dagger;
     if (holder && holder.userData && holder.userData.dagger) {
       const ud = holder.userData.dagger;
@@ -3570,10 +3569,8 @@ function weapon3dFire() {
 //   holder (w3d.meshes.dagger, the WEAPON_3D.dagger.hipPos reference)
 //     ├── pivot  (a Group at origin — its rotation IS the swing)
 //     │     └── star  (the loaded GLB, centered)
-//     ├── slashTrail  (a curved plane mesh, hidden by default, fades in
-//     │                during swing, faces the camera each frame)
-//     └── glowTip     (small bright sphere at the blade's far point,
-//                      pulses on swing)
+//     └── slashTrail  (a curved plane mesh, hidden by default, fades in
+//                      during swing, faces the camera each frame)
 function _loadDaggerMesh(holder) {
   if (typeof THREE === "undefined" || !THREE.GLTFLoader) {
     console.warn("[fps][3d] dagger: GLTFLoader unavailable, viewmodel empty");
@@ -3669,25 +3666,11 @@ function _loadDaggerMesh(holder) {
       slashTrail.rotation.set(0, 0, -Math.PI / 2 - Math.PI * 0.275);
       model.add(slashTrail);
 
-      // === Glow tip (child of model — sits at the star's tip) ===
-      // Small bright sphere at the tip of the star, pulses on swing.
-      const tipGeo = new THREE.SphereGeometry(0.030, 12, 8);
-      const tipMat = new THREE.MeshBasicMaterial({
-        color: 0xfff0a0,
-        transparent: true,
-        opacity: 0.3,
-        blending: THREE.AdditiveBlending,
-      });
-      const glowTip = new THREE.Mesh(tipGeo, tipMat);
-      // Tip is at +Y direction per the GLB re-bake (was +X before).
-      glowTip.position.set(0, TARGET * 0.4, 0);
-      model.add(glowTip);
-
       holder.add(pivot);
 
       // Stash the parts on the holder so render3dWeapon can animate them.
       holder.userData.dagger = {
-        pivot, slashTrail, glowTip, armLength,
+        pivot, slashTrail, armLength,
       };
       console.log("[fps][3d] dagger viewmodel loaded",
         "bbox=" + size.toArray().map(v => v.toFixed(2)).join(","),
@@ -3866,9 +3849,6 @@ function render3dWeapon(dt) {
       } else {
         parts.slashTrail.material.opacity = 0;
       }
-      // Glow tip: pulse with sw. Always slightly visible so the player
-      // sees where the blade "is" even at rest.
-      parts.glowTip.material.opacity = 0.30 + sw * 0.70;
     }
   }
 
