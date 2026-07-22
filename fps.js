@@ -816,16 +816,22 @@ addEventListener("keydown", e => {
     // Re-apply the rotation immediately so the user sees the change
     // even if the dagger isn't loaded yet. The position offset is
     // picked up in render3dWeapon on the next frame.
-    if (w3d && w3d.meshes && w3d.meshes.dagger && w3d.meshes.dagger.children) {
-      for (const child of w3d.meshes.dagger.children) {
-        // First child is the pivot; apply rotation to its star model.
-        if (child.children) {
-          for (const sub of child.children) {
-            if (sub.isMesh) {
-              sub.rotation.set(_daggerDbg.rx, _daggerDbg.ry, _daggerDbg.rz);
-            }
-          }
-        }
+    //
+    // IMPORTANT: only the *model* (the loaded Star.glb Group) should be
+    // rotated by _daggerDbg. The slashTrail and glowTip are children of
+    // the pivot and already follow the pivot's swing rotation — touching
+    // their own rotation here would visually decouple them from the
+    // dagger. (Previous bug: the loop was `if (sub.isMesh)` which
+    // silently skipped the model because the GLB is a Group, not a Mesh,
+    // so only the slashTrail + glowTip were being rotated — the user
+    // saw the small yellow glow sphere orbiting instead of the dagger.)
+    const holder = w3d && w3d.meshes && w3d.meshes.dagger;
+    if (holder && holder.userData && holder.userData.dagger) {
+      const ud = holder.userData.dagger;
+      // ud.pivot.children[0] is the loaded model Group.
+      const model = ud.pivot.children[0];
+      if (model) {
+        model.rotation.set(_daggerDbg.rx, _daggerDbg.ry, _daggerDbg.rz);
       }
     }
     _daggerDbgUpdateHud();
@@ -3528,6 +3534,7 @@ function init3dWeapons() {
     _loadDaggerMesh(w3d.meshes.dagger);
 
     Object.assign(w3d, { canvas, scene, camera, renderer, ready: true });
+    if (typeof window !== "undefined") window.__w3d = w3d;  // debug hook
     w3d.prevDir = player.dir; w3d.prevPitch = player.pitch;
     console.log("[fps][3d] init OK", {
       canvas: canvas.width + "x" + canvas.height,
