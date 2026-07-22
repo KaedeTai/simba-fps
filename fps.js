@@ -5605,26 +5605,38 @@ function updateTeammate(dt) {
   //
   // Decay time constant ~50 ms → ~150 ms to <5% amplitude.
   if (e.isMixamo && e.rifle && e._kickT !== undefined) {
+    // === BAKED RIFLE ORIENTATION (was live-tunable, see _daggerDbg commit) ===
+    // The Vanguard rifle transform is fixed at construction time (see the
+    // BAKED RIFLE ORIENTATION block when the rifle is added to the right
+    // hand). These constants must match those baked values; the kick
+    // decay just adds tiny per-frame offsets on top of them.
+    const BASE_RX = -0.5 * Math.PI;
+    const BASE_RY =  0;
+    const BASE_RZ = -0.5 * Math.PI;
+    const BASE_TX =  0.01;
+    const BASE_TY =  0.05;
+    const BASE_TZ =  0.02;
     if (e._kickT > 0.001) {
       e._kickT *= Math.exp(-dt * 20);
       const k = e._kickT;
       const inv = e.rifleInvScale || 1;
       e.rifle.position.set(
-        (_RIFLE_BASE_POS.x + _rifleDbg.tx + 0)          * inv,
-        (_RIFLE_BASE_POS.y + _rifleDbg.ty + 0.008 * k)  * inv,
-        (_RIFLE_BASE_POS.z + _rifleDbg.tz + 0.04  * k)  * inv);
+        (BASE_TX)         * inv,
+        (BASE_TY + 0.008 * k) * inv,
+        (BASE_TZ + 0.04  * k) * inv);
       e.rifle.rotation.set(
-        _rifleDbg.rx * Math.PI + 0.05 * k,
-        _rifleDbg.ry * Math.PI,
-        _rifleDbg.rz * Math.PI);
+        BASE_RX + 0.05 * k,
+        BASE_RY,
+        BASE_RZ);
       e._kickWasActive = true;
     } else if (e._kickWasActive) {
-      // Snap back to base one last time so subsequent live keyboard
-      // tuning owns the transform cleanly.
+      // Snap back to the baked base one last time so the rifle doesn't
+      // get stranded at the last kick-decay position.
       e._kickT = 0;
       e._kickWasActive = false;
-      // _rifleDbgApply removed — the rifle uses the baked defaults,
-      // and the new daggerDbg system handles its own viewmodel.
+      const inv = e.rifleInvScale || 1;
+      e.rifle.position.set(BASE_TX * inv, BASE_TY * inv, BASE_TZ * inv);
+      e.rifle.rotation.set(BASE_RX, BASE_RY, BASE_RZ);
     }
   }
 
