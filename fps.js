@@ -36,64 +36,58 @@ let USE_3D_WORLD = _readWorld3dPref();
 console.log("[fps][world3d] mode:", USE_3D_WORLD ? "3D" : "2.5D",
   "(source: URL/localStorage/default)");
 
-// -------------------- Teammate rifle rotation live-tuning --------------
-// Values are in units of π so it reads naturally in the URL and HUD
-// ("0.5" = π/2). Init from URL query (?rifleRX=0.5&rifleRY=0.5&rifleRZ=0);
-// keyboard: [ / ] adjust X, ; / ' adjust Y, , / . adjust Z (0.05π step);
-// P prints current values to console. Reapplies to the attached rifle in
-// real time via world3d.entities.teammate.rifle.
-function _readRifleDbg() {
-  // Rotation defaults baked from user's live-tuning session against the
-  // Basic Shooter Pack Idle pose. Position defaults nudged forward on Z
-  // by -0.1 world units (rifle was clipping into the teammate's chest
-  // under the new Idle pose). URL query still overrides both so future
-  // poses can be re-tuned without a code change.
-  let rx = -0.5, ry = 0, rz = -0.5;
-  let tx = -0.04, ty = 0.07, tz = 0;    // baked from user's tuning session
+// -------------------- Dagger (player viewmodel) live-tuning --------------
+// Values are in radians (rotation) or world units (position). Init from
+// URL query (?daggerRX=0.5&daggerRY=0.5&daggerRZ=0&daggerTX=...);
+// keyboard: [ / ] adjust RX, ; / ' adjust RY, , / . adjust RZ (0.1 step);
+// - / = adjust TX (left/right), Bksp / \ adjust TY, N / M adjust TZ;
+// P prints current values to console. The star's rotation is applied
+// in _loadDaggerMesh() at load time; the position offset is added in
+// render3dWeapon() each frame so the dagger viewmodel follows the
+// tuning live.
+//
+// Replaces the older teammate-rifle tuning — the rifle is now
+// committed at the baked defaults (worked well across sessions), and
+// the dagger still needs user-facing live tuning because the Star.glb
+// orientation wasn't right on first load.
+function _readDaggerDbg() {
+  let rx = 0, ry = 0, rz = 0;
+  let tx = 0, ty = 0, tz = 0;
   try {
     const u = new URLSearchParams(location.search);
-    if (u.has("rifleRX")) rx = parseFloat(u.get("rifleRX"));
-    if (u.has("rifleRY")) ry = parseFloat(u.get("rifleRY"));
-    if (u.has("rifleRZ")) rz = parseFloat(u.get("rifleRZ"));
-    if (u.has("rifleTX")) tx = parseFloat(u.get("rifleTX"));
-    if (u.has("rifleTY")) ty = parseFloat(u.get("rifleTY"));
-    if (u.has("rifleTZ")) tz = parseFloat(u.get("rifleTZ"));
+    if (u.has("daggerRX")) rx = parseFloat(u.get("daggerRX"));
+    if (u.has("daggerRY")) ry = parseFloat(u.get("daggerRY"));
+    if (u.has("daggerRZ")) rz = parseFloat(u.get("daggerRZ"));
+    if (u.has("daggerTX")) tx = parseFloat(u.get("daggerTX"));
+    if (u.has("daggerTY")) ty = parseFloat(u.get("daggerTY"));
+    if (u.has("daggerTZ")) tz = parseFloat(u.get("daggerTZ"));
   } catch (e) {}
   return { rx, ry, rz, tx, ty, tz };
 }
-const _rifleDbg = _readRifleDbg();
-console.log("[fps][rifleDbg] init from URL:", _rifleDbg);
-// Position baseline in world units — the historical rifle offset applied
-// on top of the debug delta. Position under the bone gets multiplied by
-// invScale (stashed on the teammate entity) to convert world → bone-local.
-const _RIFLE_BASE_POS = { x: 0.05, y: -0.02, z: 0.02 };
-function _rifleDbgApply() {
-  if (typeof world3d === "undefined") return;
-  const e = world3d && world3d.entities && world3d.entities.teammate;
-  if (!e || !e.rifle) return;
-  e.rifle.rotation.set(
-    _rifleDbg.rx * Math.PI, _rifleDbg.ry * Math.PI, _rifleDbg.rz * Math.PI);
-  const inv = e.rifleInvScale || 1;
-  e.rifle.position.set(
-    (_RIFLE_BASE_POS.x + _rifleDbg.tx) * inv,
-    (_RIFLE_BASE_POS.y + _rifleDbg.ty) * inv,
-    (_RIFLE_BASE_POS.z + _rifleDbg.tz) * inv);
+const _daggerDbg = _readDaggerDbg();
+console.log("[fps][daggerDbg] init from URL:", _daggerDbg);
+// Apply the dagger rotation tuning to the star model in the pivot frame.
+// Called from _loadDaggerMesh so the model's local rotation reflects the
+// current tuning values at load time.
+function _daggerDbgApplyToModel(model) {
+  if (!model) return;
+  model.rotation.set(_daggerDbg.rx, _daggerDbg.ry, _daggerDbg.rz);
 }
-function _rifleDbgUpdateHud() {
-  let hud = document.getElementById("rifleDbg");
+function _daggerDbgUpdateHud() {
+  let hud = document.getElementById("daggerDbg");
   if (!hud) {
     hud = document.createElement("div");
-    hud.id = "rifleDbg";
+    hud.id = "daggerDbg";
     hud.style.cssText = "position:fixed;left:12px;bottom:12px;z-index:9;" +
-      "font:11px 'SF Mono',Menlo,monospace;color:#7dffd0;" +
+      "font:11px 'SF Mono',Menlo,monospace;color:#ffd07d;" +
       "background:rgba(0,0,0,.55);padding:5px 8px;border-radius:4px;" +
       "pointer-events:none;letter-spacing:1px;line-height:1.5";
     document.body.appendChild(hud);
   }
   const f2 = v => v.toFixed(2);
   hud.innerHTML =
-    `rifle R: X=${f2(_rifleDbg.rx)}π  Y=${f2(_rifleDbg.ry)}π  Z=${f2(_rifleDbg.rz)}π  <span style="opacity:.6">[/] ;/' ,/.</span><br>` +
-    `rifle T: X=${f2(_rifleDbg.tx)}   Y=${f2(_rifleDbg.ty)}   Z=${f2(_rifleDbg.tz)}   <span style="opacity:.6">-/= Bksp/\\ N/M  P=log</span>`;
+    `dagger R(rad): X=${f2(_daggerDbg.rx)}  Y=${f2(_daggerDbg.ry)}  Z=${f2(_daggerDbg.rz)}  <span style="opacity:.6">[/] ;/' ,/.</span><br>` +
+    `dagger T:       X=${f2(_daggerDbg.tx)}  Y=${f2(_daggerDbg.ty)}  Z=${f2(_daggerDbg.tz)}  <span style="opacity:.6">-/= Bksp/\\ N/M  P=log</span>`;
 }
 
 function toggleWorld3dMode() {
@@ -787,39 +781,54 @@ addEventListener("keydown", e => {
     e.preventDefault();
     if (shopOpen) closeShop(); else if (running && !gameOver && !paused) openShop(false);
   }
-  // -------- Teammate rifle rotation live tuning --------
-  // BracketLeft/Right → X, Semicolon/Quote → Y, Comma/Period → Z.
+  // -------- Dagger viewmodel live tuning --------
+  // BracketLeft/Right → RX, Semicolon/Quote → RY, Comma/Period → RZ.
+  // Minus/Equal → TX, Backspace/Backslash → TY, KeyN/KeyM → TZ.
   // KeyP dumps current values so the user can paste them into a URL or
-  // report them back for a defaults commit.
-  const RSTEP = 0.05;                                    // step in units of π
-  const TSTEP = 0.02;                                    // step in world units (finer than rotation)
+  // commit them as baked defaults. Replaces the old rifleDbg system —
+  // the Vanguard teammate's rifle position was already locked in, and
+  // the Star.glb dagger viewmodel still needs user-facing tuning.
+  const RSTEP = 0.1;                                     // step in radians (~5.7°)
+  const TSTEP = 0.01;                                    // step in world units
   let touched = false;
-  if      (e.code === "BracketLeft")  { _rifleDbg.rx -= RSTEP; touched = true; }
-  else if (e.code === "BracketRight") { _rifleDbg.rx += RSTEP; touched = true; }
-  else if (e.code === "Semicolon")    { _rifleDbg.ry -= RSTEP; touched = true; }
-  else if (e.code === "Quote")        { _rifleDbg.ry += RSTEP; touched = true; }
-  else if (e.code === "Comma")        { _rifleDbg.rz -= RSTEP; touched = true; }
-  else if (e.code === "Period")       { _rifleDbg.rz += RSTEP; touched = true; }
+  if      (e.code === "BracketLeft")  { _daggerDbg.rx -= RSTEP; touched = true; }
+  else if (e.code === "BracketRight") { _daggerDbg.rx += RSTEP; touched = true; }
+  else if (e.code === "Semicolon")    { _daggerDbg.ry -= RSTEP; touched = true; }
+  else if (e.code === "Quote")        { _daggerDbg.ry += RSTEP; touched = true; }
+  else if (e.code === "Comma")        { _daggerDbg.rz -= RSTEP; touched = true; }
+  else if (e.code === "Period")       { _daggerDbg.rz += RSTEP; touched = true; }
   // Position tuning (world units).
-  else if (e.code === "Minus")        { _rifleDbg.tx -= TSTEP; touched = true; }
-  else if (e.code === "Equal")        { _rifleDbg.tx += TSTEP; touched = true; }
-  else if (e.code === "Backspace")    { _rifleDbg.ty -= TSTEP; touched = true; }
-  else if (e.code === "Backslash")    { _rifleDbg.ty += TSTEP; touched = true; }
-  // (Digit9 would conflict with the weapon-slot switch, so use KeyN/KeyM
-  // for the Z-axis position tuning instead.)
-  else if (e.code === "KeyN")         { _rifleDbg.tz -= TSTEP; touched = true; }
-  else if (e.code === "KeyM")         { _rifleDbg.tz += TSTEP; touched = true; }
+  else if (e.code === "Minus")        { _daggerDbg.tx -= TSTEP; touched = true; }
+  else if (e.code === "Equal")        { _daggerDbg.tx += TSTEP; touched = true; }
+  else if (e.code === "Backspace")    { _daggerDbg.ty -= TSTEP; touched = true; }
+  else if (e.code === "Backslash")    { _daggerDbg.ty += TSTEP; touched = true; }
+  else if (e.code === "KeyN")         { _daggerDbg.tz -= TSTEP; touched = true; }
+  else if (e.code === "KeyM")         { _daggerDbg.tz += TSTEP; touched = true; }
   else if (e.code === "KeyP")         {
-    console.log("[fps][rifleDbg]",
-      `R=(${_rifleDbg.rx.toFixed(3)}π, ${_rifleDbg.ry.toFixed(3)}π, ${_rifleDbg.rz.toFixed(3)}π)`,
-      `T=(${_rifleDbg.tx.toFixed(3)}, ${_rifleDbg.ty.toFixed(3)}, ${_rifleDbg.tz.toFixed(3)})`,
+    console.log("[fps][daggerDbg]",
+      `R=(${_daggerDbg.rx.toFixed(3)}, ${_daggerDbg.ry.toFixed(3)}, ${_daggerDbg.rz.toFixed(3)})`,
+      `T=(${_daggerDbg.tx.toFixed(3)}, ${_daggerDbg.ty.toFixed(3)}, ${_daggerDbg.tz.toFixed(3)})`,
       "→ URL:",
-      `?rifleRX=${_rifleDbg.rx.toFixed(3)}&rifleRY=${_rifleDbg.ry.toFixed(3)}&rifleRZ=${_rifleDbg.rz.toFixed(3)}` +
-      `&rifleTX=${_rifleDbg.tx.toFixed(3)}&rifleTY=${_rifleDbg.ty.toFixed(3)}&rifleTZ=${_rifleDbg.tz.toFixed(3)}`);
+      `?daggerRX=${_daggerDbg.rx.toFixed(3)}&daggerRY=${_daggerDbg.ry.toFixed(3)}&daggerRZ=${_daggerDbg.rz.toFixed(3)}` +
+      `&daggerTX=${_daggerDbg.tx.toFixed(3)}&daggerTY=${_daggerDbg.ty.toFixed(3)}&daggerTZ=${_daggerDbg.tz.toFixed(3)}`);
   }
   if (touched) {
-    _rifleDbgApply();
-    _rifleDbgUpdateHud();
+    // Re-apply the rotation immediately so the user sees the change
+    // even if the dagger isn't loaded yet. The position offset is
+    // picked up in render3dWeapon on the next frame.
+    if (w3d && w3d.meshes && w3d.meshes.dagger && w3d.meshes.dagger.children) {
+      for (const child of w3d.meshes.dagger.children) {
+        // First child is the pivot; apply rotation to its star model.
+        if (child.children) {
+          for (const sub of child.children) {
+            if (sub.isMesh) {
+              sub.rotation.set(_daggerDbg.rx, _daggerDbg.ry, _daggerDbg.rz);
+            }
+          }
+        }
+      }
+    }
+    _daggerDbgUpdateHud();
     e.preventDefault();
   }
 });
@@ -3604,6 +3613,12 @@ function _loadDaggerMesh(holder) {
       // armLength 0.20 keeps the star x≤0.20 even at the swing extremes.
       const armLength = 0.20;
       model.position.set(armLength, 0, 0);
+      // === Dagger tuning: apply rotation from _daggerDbg (URL query or
+      // live keyboard) to the star model. Re-applied each time the
+      // dagger reloads so URL overrides always take effect on a fresh
+      // load. The hotkey path also re-applies it on each press for
+      // instant feedback.
+      _daggerDbgApplyToModel(model);
       pivot.add(model);
 
       // === Slash trail (child of pivot — rotates with the star) ===
@@ -3773,14 +3788,21 @@ function render3dWeapon(dt) {
   const a = w3d.aimT;
   const hx = cfg.hipPos[0], hy = cfg.hipPos[1], hz = cfg.hipPos[2];
   const ax = cfg.aimPos[0], ay = cfg.aimPos[1], az = cfg.aimPos[2];
-  const px = hx * (1 - a) + ax * a + bobX + w3d.turnLagX * 0.4;
+  // === Dagger position tuning offset (added on top of hipPos) ===
+  // The daggerDbg.tx/ty/tz are world-unit deltas that the user
+  // dials in with [-/=] [Bksp/\] [N/M] to fix the Star.glb viewmodel
+  // position on the weapon3d canvas. Applied to all weapons' meshes
+  // (no-op when tx=ty=tz=0) so the same code path serves the future
+  // case where a 3D weapon needs live tuning.
+  const dtx = _daggerDbg.tx, dty = _daggerDbg.ty, dtz = _daggerDbg.tz;
+  const px = hx * (1 - a) + ax * a + bobX + w3d.turnLagX * 0.4 + dtx;
   // MUZZLE RISE on fire: weapon translates UP (+y) and BACK toward viewer (+z).
   // DAGGER thrust instead: forward (-z) + slight down (-y) — a stab, not a kick.
   const isDagger = vm === "dagger";
   const py = hy * (1 - a) + ay * a + bobY + w3d.turnLagY * 0.35
-              + (isDagger ? -sw * 0.10 : rk * 0.055);
+              + (isDagger ? -sw * 0.10 : rk * 0.055) + dty;
   const pz = hz * (1 - a) + az * a
-              + (isDagger ? -((cfg.swingStab || 0.20) * sw) : rk * 0.030);
+              + (isDagger ? -((cfg.swingStab || 0.20) * sw) : rk * 0.030) + dtz;
   mesh.position.set(px, py, pz);
   // MUZZLE RISE (rotation): +rotation.x lifts the barrel tip up. The previous
   // version had this sign flipped, so recoil looked like muzzle DEPRESSION.
@@ -4289,14 +4311,17 @@ async function createTeammateFromMixamo() {
     //      URL: ?rifleRX=<n>&rifleRY=<n>&rifleRZ=<n> (n in units of π).
     //      Keys: [/] adjust X, ;/' adjust Y, ,/. adjust Z (0.05π step).
     //      P prints current values to console so they can be copied back.
-    rifle.rotation.set(_rifleDbg.rx * Math.PI, _rifleDbg.ry * Math.PI, _rifleDbg.rz * Math.PI);
-    // World-space offset baseline (_RIFLE_BASE_POS = 0.05, -0.02, 0.02)
-    // plus the debug delta (_rifleDbg.tx/ty/tz). Bone-local coords get
-    // multiplied by handScale to become world, so multiply by invScale.
+    // === BAKED RIFLE ORIENTATION ===
+    // The Vanguard teammate's rifle position was previously live-tunable
+    // via the [_rifleDbg] system. That system was removed in favor of
+    // dagger viewmodel tuning; the rifle values are now committed
+    // here as the final defaults. (Previous baked values: RX=-0.5π,
+    // RY=0, RZ=-0.5π, TX=-0.04, TY=0.07, TZ=0.)
+    rifle.rotation.set(-0.5 * Math.PI, 0, -0.5 * Math.PI);
     rifle.position.set(
-      (_RIFLE_BASE_POS.x + _rifleDbg.tx) * invScale,
-      (_RIFLE_BASE_POS.y + _rifleDbg.ty) * invScale,
-      (_RIFLE_BASE_POS.z + _rifleDbg.tz) * invScale);
+      (0.05 - 0.04) * invScale,
+      (-0.02 + 0.07) * invScale,
+      (0.02 + 0) * invScale);
     rightHand.add(rifle);
     // One-shot world-position log after add so we can see where it landed.
     rifle.updateMatrixWorld(true);
@@ -5591,7 +5616,8 @@ function updateTeammate(dt) {
       // tuning owns the transform cleanly.
       e._kickT = 0;
       e._kickWasActive = false;
-      _rifleDbgApply();
+      // _rifleDbgApply removed — the rifle uses the baked defaults,
+      // and the new daggerDbg system handles its own viewmodel.
     }
   }
 
