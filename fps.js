@@ -2116,20 +2116,35 @@ function update(dt) {
       e.lungeT = 0.35;
       _addScreenShake(0.05);
     }
-    // === persistence: no attacks during the grace period either ===
+    // === MELEE ATTACK WINDUP ===
+    // Give the player a readable telegraph: when a melee enemy is in
+    // range and ready to swing (attackCd ≤ 0), start a 0.30 s windup
+    // before the hit lands. During the windup the right arm raises
+    // (driven from _syncEnemyMeshes via e.swingT) so the player sees
+    // the hit coming. We re-use the same field that the dagger uses
+    // (it's per-enemy, so no cross-contamination).
     if (tdist < reach && sees && e.attackCd <= 0 && resumeSafetyT <= 0) {
-      e.attackCd = (e.boss ? 1.2 : 0.9) * (e.enraged ? 0.55 : 1) * (e.kind === "charger" ? 0.7 : 1);
-      if (tgt === player) {
-        player.hp -= e.dmg;
-        hurtT = 0.4;
-        if (player.hp <= 0) { player.hp = 0; endGame(); return; }
-      } else {
-        ally.hp -= e.dmg;
-        ally.hurt = 0.2;
-        if (ally.hp <= 0 && !ally.dead) {
-          ally.hp = 0; ally.dead = true; ally.deadT = 0;
-          showBanner("⚠ 隊友倒下了！可在商店復活");
+      if (e.swingT === undefined || e.swingT <= 0) {
+        e.swingT = 0.30;            // windup window — arm raised, no damage yet
+      } else if (e.swingT <= dt) {
+        // windup elapsed → commit the hit and start the cooldown
+        e.swingT = 0;
+        e.attackCd = (e.boss ? 1.2 : 0.9) * (e.enraged ? 0.55 : 1) * (e.kind === "charger" ? 0.7 : 1);
+        if (tgt === player) {
+          player.hp -= e.dmg;
+          hurtT = 0.4;
+          if (player.hp <= 0) { player.hp = 0; endGame(); return; }
+        } else {
+          ally.hp -= e.dmg;
+          ally.hurt = 0.2;
+          if (ally.hp <= 0 && !ally.dead) {
+            ally.hp = 0; ally.dead = true; ally.deadT = 0;
+            showBanner("⚠ 隊友倒下了！可在商店復活");
+          }
         }
+      } else {
+        // windup still ticking — let it count down without applying damage
+        e.swingT = Math.max(0, e.swingT - dt);
       }
     }
   }
@@ -5315,7 +5330,17 @@ function _syncEnemyMeshes(dt) {
     rec.group.position.y = swAbs * bounceAmp;
     // === Per-kind walk animation ===
     const kind = rec.kind || e.kind || "grunt";
-    if (kind === "charger") {
+    // === Melee attack windup pose ===
+    // When e.swingT > 0 the enemy is telegraphing a swing. Lift the
+    // right arm (and weapon) up and back, the way a human would before
+    // bringing a club/axe/sword down. wind = 1 → fully cocked; 0 → idle.
+    // After the windup commits, e.swingT is cleared by update() and the
+    // arm snaps back via the normal walk cycle next frame.
+    if (alive && e.swingT && e.swingT > 0 && rec.armR) {
+      const wind = e.swingT / 0.30;                       // 0..1, 1 = start
+      rec.armR.rotation.x = -1.5 - wind * 0.3;            // raised overhead
+      if (rec.armL) rec.armL.rotation.x = -sw * legAmp * 0.45; // keep left arm in walk cycle
+    } else if (kind === "charger") {
       // 4-legged gallop: front-left + back-right in phase, front-right +
       // back-left in opposite phase. Bigger amplitude than humanoids.
       if (rec.legFL) rec.legFL.rotation.x = +sw * legAmp;
