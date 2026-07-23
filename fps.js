@@ -4834,7 +4834,15 @@ function createShield3DMesh() {
   const axeBladeR = axeBladeL.clone();
   axeBladeR.position.x = +0.10; axe.add(axeBladeR);
   armR.add(axe);
-  return { group: g, kind: "shield", armL, armR, legL, legR, bodyMat: armorMat, walkAmp: 0.40, bounceAmp: 0.02 };
+  // Limb explosion (death)
+  const explodable = [head, armL, armR, legL, legR, shield, axe];
+  for (const p of explodable) {
+    p.userData.vel = new THREE.Vector3();
+    p.userData.angVel = new THREE.Vector3();
+    p.userData.settled = false;
+  }
+  return { group: g, kind: "shield", armL, armR, legL, legR, bodyMat: armorMat,
+           walkAmp: 0.40, bounceAmp: 0.02, explodable };
 }
 
 // ----- SHOOTER — hooded sniper with scoped rifle -----
@@ -4908,8 +4916,17 @@ function createShooter3DMesh() {
   const sling = new THREE.Mesh(new THREE.TorusGeometry(0.10, 0.012, 6, 12, Math.PI), darkMat);
   sling.position.set(0, -0.20, 0.05); sling.rotation.y = Math.PI / 2;
   armL.add(sling);
+  // Limb explosion (death). The shooter's hood is the small dome at
+  // the top; we tag it as the "head" so it can pop off like a helmet.
+  const shooterHead = face;
+  const explodable = [shooterHead, armL, armR, legL, legR, rifle];
+  for (const p of explodable) {
+    p.userData.vel = new THREE.Vector3();
+    p.userData.angVel = new THREE.Vector3();
+    p.userData.settled = false;
+  }
   return { group: g, kind: "shooter", armL, armR, legL, legR, eyeMat,
-           walkAmp: 0.30, bounceAmp: 0.02, rifle, lensMat };
+           walkAmp: 0.30, bounceAmp: 0.02, rifle, lensMat, explodable };
 }
 
 // ----- CHARGER — 4-legged demonic hound (no humanoid torso) -----
@@ -4974,8 +4991,17 @@ function createCharger3DMesh() {
   // Back legs
   const legBL = makeLeg(); legBL.position.set(-0.25, 0.28, 0.14); g.add(legBL);
   const legBR = makeLeg(); legBR.position.set(-0.25, 0.28, -0.14); g.add(legBR);
+  // Limb explosion: hound loses head + 4 legs + tail + snout on death.
+  // The body itself stays in the group so it can do the fall-forward
+  // pose while the rest scatters.
+  const explodable = [head, snout, tail, legFL, legFR, legBL, legBR];
+  for (const p of explodable) {
+    p.userData.vel = new THREE.Vector3();
+    p.userData.angVel = new THREE.Vector3();
+    p.userData.settled = false;
+  }
   return { group: g, kind: "charger", legFL, legFR, legBL, legBR,
-           bodyMat, eyeMat, walkAmp: 0.65, bounceAmp: 0.06 };
+           bodyMat, eyeMat, walkAmp: 0.65, bounceAmp: 0.06, explodable };
 }
 
 // ----- BOSS — purple/gold warlord with flaming sword + cape -----
@@ -5067,8 +5093,18 @@ function createBoss3DMesh() {
   const pommel = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 6), goldMat);
   pommel.position.y = -0.02; sword.add(pommel);
   armR.add(sword);
+  // Boss limb explosion: head, both arms, both legs, the flaming sword.
+  // The torso + cape stay in the group so the body can keep doing the
+  // "fall forward" pose. Sword carries the boss's flame so when it
+  // flies off it leaves a brief ember trail (engineered in physics loop).
+  const explodable = [head, armL, armR, legL, legR, sword];
+  for (const p of explodable) {
+    p.userData.vel = new THREE.Vector3();
+    p.userData.angVel = new THREE.Vector3();
+    p.userData.settled = false;
+  }
   return { group: g, kind: "boss", armL, armR, legL, legR, bodyMat: armorMat, eyeMat,
-           cape, sword, flameMat, walkAmp: 0.50, bounceAmp: 0.05 };
+           cape, sword, flameMat, walkAmp: 0.50, bounceAmp: 0.05, explodable };
 }
 
 // Dispatch: build the right 3D mesh for an enemy's kind. Returns the
