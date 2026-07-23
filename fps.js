@@ -45,6 +45,12 @@ console.log("[fps][world3d] mode:", USE_3D_WORLD ? "3D" : "2.5D",
 // in _loadDaggerMesh() at load time; the position offset is added in
 // render3dWeapon() each frame so the dagger viewmodel follows the
 // tuning live.
+// -------------------- Scratch vectors for hot loops ----------------------
+// Reused by _syncEnemyMeshes (limb explosion: grab world transforms
+// without allocating a fresh Vector3 / Quaternion every frame for every
+// dead enemy's part).
+const _tmpV3a = new THREE.Vector3();
+const _tmpQa  = new THREE.Quaternion();
 //
 // Replaces the older teammate-rifle tuning — the rifle is now
 // committed at the baked defaults (worked well across sessions), and
@@ -4734,7 +4740,17 @@ function createGrunt3DMesh() {
     club.add(sp);
   }
   armR.add(club);
-  return { group: g, kind: "grunt", armL, armR, legL, legR, bodyMat, eyeMat, walkAmp: 0.55, bounceAmp: 0.04 };
+  // Parts that fly off when the grunt dies. Marked here so _syncEnemyMeshes
+  // can reparent them to the scene root, give them velocity, and let
+  // gravity + a floor-stop carry them through the death sequence.
+  const explodable = [head, armL, armR, legL, legR, club];
+  for (const p of explodable) {
+    p.userData.vel = new THREE.Vector3();
+    p.userData.angVel = new THREE.Vector3();
+    p.userData.settled = false;
+  }
+  return { group: g, kind: "grunt", armL, armR, legL, legR, bodyMat, eyeMat,
+           walkAmp: 0.55, bounceAmp: 0.04, explodable };
 }
 
 // ----- SHIELD — dark knight with tower shield + battle axe -----
@@ -5166,6 +5182,15 @@ function _syncEnemyMeshes(dt) {
             else o.material.dispose();
           }
         });
+        // Limb-explosion debris lives on world3d.scene (reparented at
+        // death) and isn't reached by the rec.group traversal. Walk it
+        // too, and remove it from the scene.
+        if (rec.explodable) {
+          for (const p of rec.explodable) {
+            if (p.geometry) p.geometry.dispose();
+            world3d.scene.remove(p);
+          }
+        }
       }
       world3d.scene.remove(rec.group);
       meshes.delete(enemy);
@@ -5196,6 +5221,39 @@ function _syncEnemyMeshes(dt) {
       const roll = (e.boss ? 0.7 : 0.3) * t;
       rec.group.rotation.z = Math.sin(e.deadT * 4) * roll;
       rec.group.visible = e.deadT < 1.2;
+      // === Limb explosion on death ===
+      // First frame of death: reparent the explodable parts to the
+      // scene root, snap them to their current world transform, and
+      // give them random outward + upward velocity. After that, this
+      // branch is skipped (rec.exploded gate) and the parts fly under
+      // their own velocity / angular velocity until they hit the floor
+      // (y < 0.05) and settle. The leftover group keeps doing the
+      // "fall forward" animation but is hollow underneath.
+      if (rec.explodable && !rec.exploded) {
+        rec.exploded = true;
+        const tmpV = _tmpV3a, tmpQ = _tmpQa;
+        for (const p of rec.explodable) {
+          p.getWorldPosition(tmpV);
+          p.getWorldQuaternion(tmpQ);
+          // Re-parent: keep current world transform by removing from old
+          // parent and re-adding at the same world pose.
+          if (p.parent) p.parent.remove(p);
+          world3d.scene.add(p);
+          p.position.copy(tmpV);
+          p.quaternion.copy(tmpQ);
+          // Outward radial impulse (in world XZ) + upward bias. The
+          // grunt's torso is small so 3-4 m/s is plenty of drama
+          // without parts flying off-screen.
+          const ang = Math.random() * Math.PI * 2;
+          const sp  = 2.2 + Math.random() * 2.2;
+          p.userData.vel.set(Math.cos(ang) * sp,
+                             2.5 + Math.random() * 2.5,
+                             Math.sin(ang) * sp);
+          p.userData.angVel.set((Math.random() - 0.5) * 12,
+                                (Math.random() - 0.5) * 12,
+                                (Math.random() - 0.5) * 12);
+        }
+      }
     } else {
       rec.group.rotation.x = 0;
       rec.group.rotation.z = 0;
@@ -5329,6 +5387,33 @@ function _syncEnemyMeshes(dt) {
     if (rec.eyeMat && rec.eyeMat.emissive) {
       // Eyes flare brighter on hit.
       rec.eyeMat.emissiveIntensity = 1.4 + hurt * 1.5;
+    }
+    // === Limb physics (debris that flew off on death) ===
+    // After the explodable parts were reparented to the scene root, they
+    // fly on their own. Each frame: apply gravity, integrate position,
+    // tumble, and freeze on the floor. We keep them alive until the
+    // corpse is despawned (e.deadT < 1.2), then the prune loop in this
+    // function disposes them via the standard material traversal — but
+    // parts now live under world3d.scene instead of rec.group, so the
+    // prune loop also needs to clean them up (handled below).
+    if (rec.exploded && rec.explodable) {
+      for (const p of rec.explodable) {
+        if (!p.userData || p.userData.settled) continue;
+        const v = p.userData.vel, av = p.userData.angVel;
+        v.y -= 11.5 * dt;                         // gravity
+        p.position.x += v.x * dt;
+        p.position.y += v.y * dt;
+        p.position.z += v.z * dt;
+        p.rotation.x += av.x * dt;
+        p.rotation.y += av.y * dt;
+        p.rotation.z += av.z * dt;
+        if (p.position.y < 0.05) {
+          p.position.y = 0.05;
+          v.set(0, 0, 0);
+          av.multiplyScalar(0.25);
+          p.userData.settled = true;
+        }
+      }
     }
   }
 }
