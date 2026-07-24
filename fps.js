@@ -5261,6 +5261,7 @@ function _syncEnemyMeshes(dt) {
     // Most enemies are built with +Z as their "forward" axis; the
     // charger is built with +X as forward (head at +0.35 x), so it
     // gets a -π/2 baked offset on top of the face-the-player yaw.
+    const kind = rec.kind || e.kind || "grunt";
     const dxE = player.x - e.x, dyE = player.y - e.y;
     const faceDir = Math.atan2(dyE, dxE);
     rec.group.rotation.y = Math.PI / 2 - faceDir + (kind === "charger" ? -Math.PI / 2 : 0);
@@ -5332,7 +5333,8 @@ function _syncEnemyMeshes(dt) {
     // via a wrapper, OR just update y inline:
     rec.group.position.y = swAbs * bounceAmp;
     // === Per-kind walk animation ===
-    const kind = rec.kind || e.kind || "grunt";
+    // (kind was already hoisted above the death/animation branch so the
+    // face-the-player math can use it for the charger offset.)
     // === Melee attack windup pose ===
     // When e.swingT > 0 the enemy is telegraphing a swing. Lift the
     // right arm (and weapon) up and back, the way a human would before
