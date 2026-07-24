@@ -57,8 +57,12 @@ const _tmpQa  = new THREE.Quaternion();
 // the dagger still needs user-facing live tuning because the new
 // dagger_v7.glb orientation is unknown until we look at it in-game.
 function _readDaggerDbg() {
-  let rx = 0, ry = 0, rz = 0;
-  let tx = 0, ty = 0, tz = 0;
+  // Defaults baked from user's live-tuning session against dagger_v7.glb.
+  // Rotation orients the tanto with tip outward and pommel toward the
+  // fist; position tucks it into the standard held-prop offset. URL
+  // query still overrides so a re-tune stays a one-URL fix.
+  let rx = 1.900, ry = -1.100, rz = 0.000;
+  let tx = 0.020, ty = -0.120, tz = 0.040;
   try {
     const u = new URLSearchParams(location.search);
     if (u.has("daggerRX")) rx = parseFloat(u.get("daggerRX"));
