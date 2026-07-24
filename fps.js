@@ -5258,9 +5258,12 @@ function _syncEnemyMeshes(dt) {
     rec.group.position.set(e.x, 0, e.y);
     // Face the player. AI chases the player so this gives the 3D body a
     // natural facing direction (limb swing reads as forward-stride).
+    // Most enemies are built with +Z as their "forward" axis; the
+    // charger is built with +X as forward (head at +0.35 x), so it
+    // gets a -π/2 baked offset on top of the face-the-player yaw.
     const dxE = player.x - e.x, dyE = player.y - e.y;
     const faceDir = Math.atan2(dyE, dxE);
-    rec.group.rotation.y = Math.PI / 2 - faceDir;
+    rec.group.rotation.y = Math.PI / 2 - faceDir + (kind === "charger" ? -Math.PI / 2 : 0);
     // Visibility + death: fall forward + slight roll for a more dynamic
     // corpse pose, then hide once the despawn window (~1.2 s) elapses.
     if (e.dead) {
