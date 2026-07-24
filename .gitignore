@@ -32,3 +32,7 @@ out/
 # Backups
 *.bak
 *~
+
+# Local worktrees + throwaway screenshots (dev-only, not shipped)
+.worktrees/
+*.jpg

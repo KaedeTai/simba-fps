@@ -54,8 +54,8 @@ const _tmpQa  = new THREE.Quaternion();
 //
 // Replaces the older teammate-rifle tuning — the rifle is now
 // committed at the baked defaults (worked well across sessions), and
-// the dagger still needs user-facing live tuning because the Star.glb
-// orientation wasn't right on first load.
+// the dagger still needs user-facing live tuning because the new
+// dagger_v7.glb orientation is unknown until we look at it in-game.
 function _readDaggerDbg() {
   let rx = 0, ry = 0, rz = 0;
   let tx = 0, ty = 0, tz = 0;
@@ -299,15 +299,13 @@ const ally = {
 const weapons = [
   { id: "pistol",  name: "手槍",     ico: "🔫", magSize: 12, fireRate: 0.13, reloadTime: 1.0,
     damage: 34,  range: 16, spread: 0.030, pellets: 1, auto: false, vm: "pistol",  owned: true },
-  // Dagger: free from the start, lives in slot 2. Uses the Star.glb model
-  // from the Vanguard Mixamo set as a 3D viewmodel. ~1.4 unit reach
+  // Dagger: free from the start, lives in slot 2. Uses dagger_v7.glb —
+  // a proper angel-winged tanto (gold pommel + pearl-inlay handle +
+  // straight tanto blade with gold angel-wing guard). ~1.4 unit reach
   // (knife-range — you basically have to be on top of the enemy).
   // No ammo: magSize: 1 is a display hack so the HUD shows a single bullet
   // icon; tryShoot's melee branch ignores weapon.mag entirely.
-  // Icon: ⭐ (the actual model is a 4-pointed throwing star with a blue
-  // gem center, not a literal blade — using a star icon to match what
-  // the player sees, while keeping the "匕首" name the user asked for).
-  { id: "dagger",  name: "匕首",     ico: "⭐", magSize: 1,  fireRate: 0.30, reloadTime: 0,
+  { id: "dagger",  name: "匕首",     ico: "🗡️", magSize: 1,  fireRate: 0.30, reloadTime: 0,
     damage: 75,  range: 1.4, spread: 0.0,   pellets: 1, auto: false, vm: "dagger",  owned: true, melee: true },
   { id: "smg",     name: "衝鋒槍",   ico: "💥", magSize: 30, fireRate: 0.06, reloadTime: 1.4,
     damage: 16,  range: 14, spread: 0.080, pellets: 1, auto: true,  vm: "smg",     cost: 150,  unlockWave: 2 },
@@ -793,7 +791,7 @@ addEventListener("keydown", e => {
   // KeyP dumps current values so the user can paste them into a URL or
   // commit them as baked defaults. Replaces the old rifleDbg system —
   // the Vanguard teammate's rifle position was already locked in, and
-  // the Star.glb dagger viewmodel still needs user-facing tuning.
+  // the dagger_v7.glb dagger viewmodel still needs user-facing tuning.
   const RSTEP = 0.1;                                     // step in radians (~5.7°)
   const TSTEP = 0.01;                                    // step in world units
   let touched = false;
@@ -823,7 +821,7 @@ addEventListener("keydown", e => {
     // even if the dagger isn't loaded yet. The position offset is
     // picked up in render3dWeapon on the next frame.
     //
-    // IMPORTANT: only the *model* (the loaded Star.glb Group) should be
+    // IMPORTANT: only the *model* (the loaded dagger_v7.glb Group) should be
     // rotated by _daggerDbg. The slashTrail is a child of the model and
     // already follows the model's rotation — touching its own rotation
     // here would visually decouple it from the dagger. (Previous bug:
@@ -1375,6 +1373,21 @@ function tryShoot() {
       const dmg = weapon.damage * falloff;
       e.hp -= dmg;
       e.hurt = 0.18;
+      // === Knockback on hit ===
+      // Push the enemy slightly away from the impact point so a hit
+      // visibly staggers it (1-step in normalized direction). Bosses
+      // take a smaller knockback so the big enemy doesn't ping-pong.
+      if (d > 0.001) {
+        const kb = e.boss ? 0.18 : 0.35;
+        e.x -= (dx / d) * kb;
+        e.y -= (dy / d) * kb;
+        if (isWall(e.x, e.y)) { e.x += (dx / d) * kb; e.y += (dy / d) * kb; }
+      }
+      // === Hit-stop (micro-stun) ===
+      // Briefly prevent the enemy from attacking so consecutive hits
+      // land cleanly. Set to a small value that gets ticked in the
+      // AI loop (so the enemy can't keep swinging while taking damage).
+      e.hitStop = 0.06;
       hitCount++;
       if (e.hp <= 0 && !e.dead) {
         e.dead = true; e.deadT = 0;
@@ -2142,6 +2155,9 @@ function update(dt) {
             showBanner("⚠ 隊友倒下了！可在商店復活");
           }
         }
+        // Tiny hit-stop on the attacker so the swing reads as a
+        // committed, weighty strike instead of an instant blip.
+        e.hitStop = 0.05;
       } else {
         // windup still ticking — let it count down without applying damage
         e.swingT = Math.max(0, e.swingT - dt);
@@ -3543,7 +3559,7 @@ function init3dWeapons() {
       scene.add(w3d.meshes[key]);
     }
 
-    // === Dagger: loaded asynchronously from assets/models/vanguard/Star.glb
+    // === Dagger: loaded asynchronously from assets/models/vanguard/dagger_v7.glb
     // (the off-hand shuriken/star from the Mixamo Vanguard set). GLB loading
     // is async, so we register a placeholder hidden group, then swap in the
     // real mesh when GLTFLoader finishes. render3dWeapon already no-ops if
@@ -3580,7 +3596,7 @@ function weapon3dFire() {
   }
 }
 
-// Asynchronously load the Star.glb dagger model and populate the placeholder
+// Asynchronously load the dagger_v7.glb dagger model and populate the placeholder
 // group. The placeholder group is already added to the scene by
 // init3dWeapons; we just replace its children with the real mesh when the
 // GLB decodes. No-op safe if THREE / GLTFLoader missing — placeholder
@@ -3599,14 +3615,14 @@ function _loadDaggerMesh(holder) {
   }
   const loader = new THREE.GLTFLoader();
   loader.load(
-    "assets/models/vanguard/Star.glb",
+    "assets/models/vanguard/dagger_v7.glb",
     (gltf) => {
       const model = gltf.scene;
-      // Auto-fit to a held-prop size (~0.40 world units long). Star.glb
-      // doesn't ship a known scale, so we read the bounding box and scale
-      // uniformly. The 0.40 size + a 0.30 arm length keeps the star
-      // visible on screen at the swing's extreme angles — anything bigger
-      // clips off the right edge.
+      // Auto-fit to a held-prop size (~0.40 world units long). The GLB
+      // ships at ~0.32 m long (real-world tanto scale). We read the
+      // bounding box and scale uniformly to a 0.40 target so the dagger
+      // stays visible on screen at the swing's extreme angles — anything
+      // bigger clips off the right edge.
       const bbox = new THREE.Box3().setFromObject(model);
       const size = new THREE.Vector3();
       bbox.getSize(size);
@@ -3624,21 +3640,20 @@ function _loadDaggerMesh(holder) {
       // === Pivot group ===
       // The pivot's rotation IS the swing. Render3dWeapon rotates the
       // pivot around the camera-relative Z axis (perpendicular to the
-      // screen) so the star arcs from up-right to down-left.
+      // screen) so the dagger arcs from up-right to down-left.
       //
-      // CRITICAL: the star must be offset on a NON-Z axis for the
+      // CRITICAL: the dagger must be offset on a NON-Z axis for the
       // rotation to move it. A point on the z-axis is invariant under
-      // z-axis rotation. We put the star on the +Y axis (camera-up in
-      // the standard FPS viewmodel orientation) so the z-rotation
+      // z-axis rotation. We put the dagger on the +Y axis (camera-up
+      // in the standard FPS viewmodel orientation) so the z-rotation
       // swings it through the +X (right) / -X (left) range — a natural
       // "right-handed chop" arc.
       //
-      // The Star.glb is the Mixamo Vanguard off-hand shuriken, with its
-      // 18 nodes already baked at "rotation 90° + scale 0.02" so the
-      // main blade (left_blade, 11.4 units long) points along +Y in the
-      // GLB's own frame. So the dagger's "tip" is in our +Y direction.
-      // (Before the GLB was re-baked, the tip was along +X and the model
-      // sat on the +X arm. Re-baking changed the principal axis.)
+      // dagger_v7.glb principal axis: TBD in-game — the user is expected
+      // to dial in rx/ry/rz via [ ] ; ' , . until the blade tip points
+      // outward and the pommel toward the fist. The current defaults
+      // are all zeros; live-tune with the HUD in the corner or set the
+      // URL query ?daggerRX=<n>&daggerRY=<n>&daggerRZ=<n>.
       const pivot = new THREE.Group();
       // Arm length tuned so the star stays within the 560x440 weapon3d
       // canvas at all swing angles. With hipPos (0, -0.18, -0.32) and
@@ -3822,7 +3837,7 @@ function render3dWeapon(dt) {
   const ax = cfg.aimPos[0], ay = cfg.aimPos[1], az = cfg.aimPos[2];
   // === Dagger position tuning offset (added on top of hipPos) ===
   // The daggerDbg.tx/ty/tz are world-unit deltas that the user
-  // dials in with [-/=] [Bksp/\] [N/M] to fix the Star.glb viewmodel
+  // dials in with [-/=] [Bksp/\] [N/M] to fix the dagger_v7.glb viewmodel
   // position on the weapon3d canvas. Applied to all weapons' meshes
   // (no-op when tx=ty=tz=0) so the same code path serves the future
   // case where a 3D weapon needs live tuning.
